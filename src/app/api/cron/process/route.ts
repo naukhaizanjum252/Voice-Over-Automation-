@@ -5,14 +5,18 @@ import { processAllChannels } from '@/services/processingService';
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
-  // Authenticate cron requests
+  // Authenticate: accept secret from query param, headers, or Vercel cron user-agent
   const { searchParams } = new URL(request.url);
   const authHeader = request.headers.get('authorization');
+  const userAgent = request.headers.get('user-agent') || '';
+
   const secret = searchParams.get('secret')
     || request.headers.get('x-cron-secret')
     || (authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null);
 
-  if (secret !== env.cronSecret) {
+  const isVercelCron = userAgent.startsWith('vercel-cron');
+
+  if (!isVercelCron && secret !== env.cronSecret) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
@@ -36,7 +40,7 @@ export async function GET(request: Request) {
   }
 }
 
-// POST also accepted
+// POST also accepted (GitHub Actions)
 export async function POST(request: Request) {
   return GET(request);
 }

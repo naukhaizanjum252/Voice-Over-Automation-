@@ -118,7 +118,7 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
     if (!voiceSearch) return true;
     const q = voiceSearch.toLowerCase();
     const lbls = v.labels ? Object.values(v.labels).join(' ').toLowerCase() : '';
-    return v.name.toLowerCase().includes(q) || v.category.toLowerCase().includes(q) || lbls.includes(q);
+    return v.name.toLowerCase().includes(q) || v.voice_id.toLowerCase().includes(q) || v.category.toLowerCase().includes(q) || lbls.includes(q);
   });
 
   const selectedVoice = voices.find((v) => v.voice_id === voiceId);
