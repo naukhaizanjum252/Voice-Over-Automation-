@@ -23,14 +23,11 @@ export default function Dashboard() {
     }
   }, []);
 
-  // Poll faster (5s) when cards are actively processing, otherwise every 30s
-  const hasProcessing = stats.some((s) => s.processing > 0);
-
   useEffect(() => {
     fetchChannels();
-    const interval = setInterval(fetchChannels, hasProcessing ? 5000 : 30000);
+    const interval = setInterval(fetchChannels, 60000);
     return () => clearInterval(interval);
-  }, [fetchChannels, hasProcessing]);
+  }, [fetchChannels]);
 
   const totalProcessed = stats.reduce((a, s) => a + s.total, 0);
   const totalCompleted = stats.reduce((a, s) => a + s.completed, 0);
