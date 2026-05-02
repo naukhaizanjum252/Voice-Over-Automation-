@@ -1,0 +1,21 @@
+name: Process Voiceovers
+
+on:
+  schedule:
+    # Every 10 minutes
+    - cron: '*/10 * * * *'
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger voiceover processing
+        run: |
+          curl -sf -X POST \
+            "${{ secrets.APP_URL }}/api/cron/process?secret=${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+            --max-time 540
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
