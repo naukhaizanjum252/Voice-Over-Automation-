@@ -10,6 +10,7 @@ export default function Dashboard() {
   const [stats, setStats] = useState<ChannelStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [runningAll, setRunningAll] = useState(false);
 
   const fetchChannels = useCallback(async () => {
     try {
@@ -84,6 +85,37 @@ export default function Dashboard() {
                 <path d="M16 16h5v5" />
               </svg>
             </button>
+            {stats.length > 0 && (
+              <button
+                onClick={async () => {
+                  setRunningAll(true);
+                  try {
+                    await fetch('/api/channel/run-all', { method: 'POST' });
+                    fetchChannels();
+                  } catch (err) { console.error('Run all failed:', err); }
+                  finally { setRunningAll(false); }
+                }}
+                disabled={runningAll}
+                className="h-9 px-3.5 rounded-xl text-[12px] font-bold t flex items-center gap-1.5 disabled:opacity-40 border"
+                style={{
+                  borderColor: 'var(--success)',
+                  color: runningAll ? '#fff' : 'var(--success)',
+                  background: runningAll ? 'var(--success)' : 'transparent',
+                }}
+              >
+                {runningAll ? (
+                  <>
+                    <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg>
+                    Run All
+                  </>
+                )}
+              </button>
+            )}
             <button
               onClick={() => setShowForm(!showForm)}
               className="h-9 px-4 rounded-xl text-[13px] font-semibold t flex items-center gap-2"

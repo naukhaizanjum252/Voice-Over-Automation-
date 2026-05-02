@@ -6,6 +6,9 @@
     "src/app/api/channel/run/route.ts": {
       "maxDuration": 300
     },
+    "src/app/api/channel/run-all/route.ts": {
+      "maxDuration": 300
+    },
     "src/app/api/card/retry/route.ts": {
       "maxDuration": 300
     }
