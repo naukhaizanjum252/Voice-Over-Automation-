@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { env } from '@/lib/env';
 import { processAllChannels } from '@/services/processingService';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: Request) {
   // Authenticate cron requests
   const { searchParams } = new URL(request.url);

@@ -8,13 +8,19 @@ import { generateAudio } from './voiceService';
  * Processes all active channels. Called by cron or manual trigger.
  */
 export async function processAllChannels(): Promise<ProcessingResult[]> {
+  console.log('[cron] Fetching auto-run channels...');
   const { data: channels, error } = await supabase
     .from('channels')
     .select('*')
     .eq('auto_run_enabled', true);
 
+  console.log('[cron] Channels query:', { count: channels?.length ?? 0, error: error?.message ?? null });
+
   if (error) throw new Error(`Failed to fetch channels: ${error.message}`);
-  if (!channels || channels.length === 0) return [];
+  if (!channels || channels.length === 0) {
+    console.log('[cron] No auto-run channels found, skipping.');
+    return [];
+  }
 
   const results: ProcessingResult[] = [];
   for (const channel of channels) {
