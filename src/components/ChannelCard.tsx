@@ -20,6 +20,8 @@ export default function ChannelCard({ stats, onRefresh }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [running, setRunning] = useState(false);
   const [retryingAll, setRetryingAll] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const successRate = total > 0 ? Math.round((completed / total) * 100) : 0;
   const failedCards = cards.filter((c) => c.status === 'failed');
@@ -141,8 +143,52 @@ export default function ChannelCard({ stats, onRefresh }: Props) {
                 )}
               </button>
             )}
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="h-9 w-9 rounded-xl t flex items-center justify-center"
+              style={{ color: 'var(--text-muted)' }}
+              title="Delete channel"
+            >
+              <TrashIcon size={14} />
+            </button>
           </div>
         </div>
+
+        {/* Delete confirmation */}
+        {confirmDelete && (
+          <div
+            className="mt-4 rounded-xl p-3.5 flex items-center justify-between gap-3 fade-up"
+            style={{ background: 'var(--danger-muted)', border: '1px solid var(--danger)' }}
+          >
+            <p className="text-[12px] font-semibold" style={{ color: 'var(--danger)' }}>
+              Delete &quot;{channel.name}&quot; and all its processed cards?
+            </p>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => setConfirmDelete(false)}
+                className="h-8 px-3 rounded-lg text-[11px] font-bold"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  setDeleting(true);
+                  try {
+                    await fetch(`/api/channel/delete?channelId=${channel.id}`, { method: 'DELETE' });
+                    onRefresh();
+                  } catch (err) { console.error('Delete failed:', err); }
+                  finally { setDeleting(false); setConfirmDelete(false); }
+                }}
+                disabled={deleting}
+                className="h-8 px-3.5 rounded-lg text-[11px] font-bold t flex items-center gap-1.5 disabled:opacity-40"
+                style={{ background: 'var(--danger)', color: '#fff' }}
+              >
+                {deleting ? <><Spinner /> Deleting...</> : 'Yes, delete'}
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Processing cards — stage stepper */}
         {processingCards.length > 0 && (
@@ -446,6 +492,14 @@ function CheckCircleIcon() {
   return (
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
+    </svg>
+  );
+}
+
+function TrashIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
     </svg>
   );
 }
