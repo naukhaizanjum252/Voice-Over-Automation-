@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "src/app/api/cron/process/route.ts": {
+      "maxDuration": 300
+    },
+    "src/app/api/channel/run/route.ts": {
+      "maxDuration": 300
+    },
+    "src/app/api/card/retry/route.ts": {
+      "maxDuration": 300
+    }
+  }
+}
