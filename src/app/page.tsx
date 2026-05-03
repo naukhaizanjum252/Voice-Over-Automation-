@@ -25,7 +25,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchChannels();
-    const interval = setInterval(fetchChannels, 5000);
+    const interval = setInterval(fetchChannels, 10000);
     return () => clearInterval(interval);
   }, [fetchChannels]);
 
