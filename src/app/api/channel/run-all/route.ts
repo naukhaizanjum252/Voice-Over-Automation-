@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
 import { processChannel } from '@/services/processingService';
+import { processChannelScripts } from '@/services/scriptProcessingService';
 import type { Channel } from '@/types';
 
 export const dynamic = 'force-dynamic';
@@ -20,20 +21,35 @@ export async function POST() {
       return NextResponse.json({ message: 'No channels found', results: [] });
     }
 
-    const allResults = [];
+    // Phase 1: Generate scripts for all channels with title lists
+    const scriptResults = [];
     for (const channel of channels) {
-      const results = await processChannel(channel as Channel);
-      allResults.push(...results);
+      const ch = channel as Channel;
+      if (ch.trello_title_list_id && ch.master_prompt) {
+        const results = await processChannelScripts(ch);
+        scriptResults.push(...results);
+      }
     }
 
-    const succeeded = allResults.filter((r) => r.success).length;
-    const failed = allResults.filter((r) => !r.success).length;
+    // Phase 2: Generate voiceovers for all channels
+    const voiceResults = [];
+    for (const channel of channels) {
+      const results = await processChannel(channel as Channel);
+      voiceResults.push(...results);
+    }
 
     return NextResponse.json({
       message: 'All channels processed',
-      succeeded,
-      failed,
-      results: allResults,
+      scripts: {
+        succeeded: scriptResults.filter((r) => r.success).length,
+        failed: scriptResults.filter((r) => !r.success).length,
+        results: scriptResults,
+      },
+      voiceovers: {
+        succeeded: voiceResults.filter((r) => r.success).length,
+        failed: voiceResults.filter((r) => !r.success).length,
+        results: voiceResults,
+      },
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error';

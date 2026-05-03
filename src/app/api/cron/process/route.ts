@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { env } from '@/lib/env';
 import { processAllChannels } from '@/services/processingService';
+import { processAllScripts } from '@/services/scriptProcessingService';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,17 +22,24 @@ export async function GET(request: Request) {
   }
 
   try {
-    console.log('[cron] Starting processing run...');
-    const results = await processAllChannels();
-    const succeeded = results.filter((r) => r.success).length;
-    const failed = results.filter((r) => !r.success).length;
+    // Phase 1: Generate scripts for title cards
+    console.log('[cron] Phase 1: Script generation...');
+    const scriptResults = await processAllScripts();
+    const scriptsOk = scriptResults.filter((r) => r.success).length;
+    const scriptsFail = scriptResults.filter((r) => !r.success).length;
+    console.log(`[cron] Scripts: ${scriptsOk} generated, ${scriptsFail} failed.`);
 
-    console.log(`[cron] Done. ${succeeded} succeeded, ${failed} failed.`);
+    // Phase 2: Generate voiceovers for script cards
+    console.log('[cron] Phase 2: Voiceover processing...');
+    const voiceResults = await processAllChannels();
+    const voiceOk = voiceResults.filter((r) => r.success).length;
+    const voiceFail = voiceResults.filter((r) => !r.success).length;
+    console.log(`[cron] Voiceovers: ${voiceOk} succeeded, ${voiceFail} failed.`);
+
     return NextResponse.json({
       message: 'Processing complete',
-      succeeded,
-      failed,
-      results,
+      scripts: { succeeded: scriptsOk, failed: scriptsFail, results: scriptResults },
+      voiceovers: { succeeded: voiceOk, failed: voiceFail, results: voiceResults },
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error';

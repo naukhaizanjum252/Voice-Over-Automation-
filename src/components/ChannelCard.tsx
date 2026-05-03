@@ -9,6 +9,7 @@ interface Props {
 }
 
 const STAGES: { key: ProcessingStage; label: string }[] = [
+  { key: 'script_generating', label: 'Writing Script' },
   { key: 'downloading', label: 'Downloading' },
   { key: 'extracting', label: 'Extracting' },
   { key: 'queued', label: 'In Queue' },
@@ -102,9 +103,23 @@ export default function ChannelCard({ stats, onRefresh }: Props) {
             <div className="flex items-center gap-3.5 mt-2 flex-wrap">
               <InfoChip icon={<BoardIcon />} text={stats.boardName} />
               <InfoChip icon={<ListIcon />} text={stats.listNames.join(', ')} />
+              {stats.titleListName && (
+                <InfoChip icon={<PenIcon />} text={`Titles: ${stats.titleListName}`} />
+              )}
               <InfoChip icon={<ClockIcon />} text={ago(lastRun)} />
               {total > 0 && <InfoChip icon={<CheckCircleIcon />} text={`${successRate}% success`} />}
             </div>
+            {channel.master_prompt && (
+              <div className="mt-2">
+                <span
+                  className="text-[10px] font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1 uppercase tracking-wide"
+                  style={{ background: 'var(--accent-muted)', color: 'var(--accent-dark)' }}
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" /></svg>
+                  AI Script Generation
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Right: Actions */}
@@ -412,6 +427,18 @@ function CardRow({ card, onRefresh, last }: { card: ProcessedCard; onRefresh: ()
               Retry
             </button>
           )}
+          {card.status === 'completed' && card.script_url && (
+            <a
+              href={card.script_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="h-7 px-2.5 rounded-lg text-[10px] font-bold flex items-center gap-1"
+              style={{ background: 'var(--accent-muted)', color: 'var(--accent-dark)' }}
+            >
+              <ScriptIcon size={10} />
+              Script
+            </a>
+          )}
           {card.status === 'completed' && card.attachment_url && (
             <a
               href={card.attachment_url}
@@ -517,6 +544,14 @@ function TrashIcon({ size = 12 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  );
+}
+
+function ScriptIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" />
     </svg>
   );
 }

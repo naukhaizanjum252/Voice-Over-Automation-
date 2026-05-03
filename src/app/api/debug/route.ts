@@ -1,79 +1,83 @@
 import { NextResponse } from 'next/server';
+import Anthropic from '@anthropic-ai/sdk';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
-  const apiKey = process.env.LABS69_API_KEY!;
-  const BASE = 'https://69labs.vip/api/v1';
-  const headers = {
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-    Authorization: `Bearer ${apiKey}`,
-  };
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const test = searchParams.get('test') || 'all';
 
   const results: Record<string, unknown> = {};
 
-  // Test 1: Generate a short TTS job
-  try {
-    const genRes = await fetch(`${BASE}/tts/generate`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        text: 'Hello, this is a test.',
-        voiceId: 'EXAVITQu4vr4xnSDxMaL',
-        model_id: 'eleven_multilingual_v2',
-        voice_settings: { stability: 0.5, similarity_boost: 0.75, speed: 1.0 },
-      }),
-    });
+  // ── Anthropic API Test (via SDK) ──
+  if (test === 'all' || test === 'anthropic') {
+    const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
+    results['anthropic_key'] = anthropicKey
+      ? `${anthropicKey.slice(0, 12)}...${anthropicKey.slice(-4)} (${anthropicKey.length} chars)`
+      : 'NOT SET';
 
-    const genText = await genRes.text();
-    let genData: Record<string, unknown> = {};
-    try { genData = JSON.parse(genText); } catch { /* not JSON */ }
+    if (anthropicKey) {
+      // Try multiple model IDs to find which one works
+      const models = [
+        'claude-sonnet-4-20250514',
+        'claude-haiku-4-5-20251001',
+        'claude-3-5-sonnet-20241022',
+        'claude-3-haiku-20240307',
+      ];
 
-    results['1_generate'] = {
-      status: genRes.status,
-      headers: Object.fromEntries(genRes.headers.entries()),
-      body: genData,
-      raw: genText.slice(0, 500),
-    };
+      const client = new Anthropic({ apiKey: anthropicKey });
 
-    // Test 2: If we got a job ID, poll status
-    const jobId = genData.id ?? genData.jobId ?? genData.task_id ?? genData.ttsId;
-    if (jobId) {
-      // Poll 3 times with 3s gaps
-      const polls = [];
-      for (let i = 0; i < 3; i++) {
-        await new Promise((r) => setTimeout(r, 3000));
-        const statusRes = await fetch(`${BASE}/tts/status/${jobId}`, { headers });
-        const statusText = await statusRes.text();
-        let statusData = {};
-        try { statusData = JSON.parse(statusText); } catch { /* not JSON */ }
-        polls.push({
-          poll: i + 1,
-          status: statusRes.status,
-          body: statusData,
-          raw: statusText.slice(0, 500),
-        });
-      }
-      results['2_status_polls'] = polls;
-
-      // Test 3: Try download anyway
-      try {
-        const dlRes = await fetch(`${BASE}/tts/download/${jobId}`, {
-          headers: { Authorization: `Bearer ${apiKey}`, Accept: 'audio/mpeg' },
-        });
-        results['3_download'] = {
-          status: dlRes.status,
-          contentType: dlRes.headers.get('content-type'),
-          size: dlRes.headers.get('content-length'),
-          body: dlRes.status !== 200 ? (await dlRes.text()).slice(0, 300) : `OK (${dlRes.headers.get('content-length')} bytes)`,
-        };
-      } catch (err) {
-        results['3_download'] = err instanceof Error ? err.message : String(err);
+      for (const model of models) {
+        try {
+          const message = await client.messages.create({
+            model,
+            max_tokens: 10,
+            messages: [{ role: 'user', content: 'Say hi' }],
+          });
+          results[`anthropic_${model}`] = {
+            status: 'OK',
+            response: message.content[0],
+            usage: message.usage,
+          };
+          break; // stop on first success
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          results[`anthropic_${model}`] = { status: 'FAILED', error: errMsg.slice(0, 200) };
+        }
       }
     }
-  } catch (err) {
-    results['1_generate'] = err instanceof Error ? err.message : String(err);
+  }
+
+  // ── 69 Labs TTS Test ──
+  if (test === 'all' || test === 'tts') {
+    const apiKey = process.env.LABS69_API_KEY!;
+    const BASE = 'https://69labs.vip/api/v1';
+    const headers = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    };
+
+    try {
+      const genRes = await fetch(`${BASE}/tts/generate`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          text: 'Hello, this is a test.',
+          voiceId: 'EXAVITQu4vr4xnSDxMaL',
+          model_id: 'eleven_multilingual_v2',
+          voice_settings: { stability: 0.5, similarity_boost: 0.75, speed: 1.0 },
+        }),
+      });
+
+      const genText = await genRes.text();
+      let genData: Record<string, unknown> = {};
+      try { genData = JSON.parse(genText); } catch { /* not JSON */ }
+
+      results['tts_generate'] = { status: genRes.status, body: genData };
+    } catch (err) {
+      results['tts_generate'] = { error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   return NextResponse.json(results, { status: 200 });

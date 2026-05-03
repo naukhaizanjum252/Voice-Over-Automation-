@@ -5,8 +5,10 @@ export interface Channel {
   name: string;
   trello_board_id: string;
   trello_list_ids: string[];
+  trello_title_list_id: string | null;
   auto_run_enabled: boolean;
   voice_config: VoiceConfig;
+  master_prompt: string | null;
   created_at: string;
 }
 
@@ -26,13 +28,14 @@ export interface ProcessedCard {
   status: CardStatus;
   processing_stage: ProcessingStage | null;
   error_message: string | null;
+  script_url: string | null;
   attachment_url: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export type CardStatus = 'pending' | 'processing' | 'completed' | 'failed';
-export type ProcessingStage = 'downloading' | 'extracting' | 'generating' | 'queued' | 'uploading';
+export type ProcessingStage = 'script_generating' | 'downloading' | 'extracting' | 'generating' | 'queued' | 'uploading';
 
 // ── Trello Types ──
 
@@ -70,6 +73,7 @@ export interface ChannelStats {
   channel: Channel;
   boardName: string;
   listNames: string[];
+  titleListName: string | null;
   total: number;
   completed: number;
   failed: number;

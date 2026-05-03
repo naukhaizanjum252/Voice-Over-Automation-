@@ -182,6 +182,13 @@ async function upsertCard(
   attachmentUrl?: string | null,
   processingStage?: string | null
 ) {
+  // First check if a record exists to preserve script_url
+  const { data: existing } = await supabase
+    .from('processed_cards')
+    .select('script_url')
+    .eq('trello_card_id', trelloCardId)
+    .single();
+
   const { error } = await supabase.from('processed_cards').upsert(
     {
       trello_card_id: trelloCardId,
@@ -191,6 +198,7 @@ async function upsertCard(
       processing_stage: processingStage ?? null,
       error_message: errorMessage ?? null,
       attachment_url: attachmentUrl ?? null,
+      script_url: existing?.script_url ?? null,
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'trello_card_id' }

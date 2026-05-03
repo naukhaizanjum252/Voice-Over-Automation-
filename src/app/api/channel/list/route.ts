@@ -62,6 +62,7 @@ export async function GET() {
         channel: ch,
         boardName: boardNameMap.get(ch.trello_board_id) ?? ch.trello_board_id,
         listNames: ch.trello_list_ids.map((lid) => listNameMap.get(lid) ?? lid),
+        titleListName: ch.trello_title_list_id ? (listNameMap.get(ch.trello_title_list_id) ?? ch.trello_title_list_id) : null,
         total: channelCards.length,
         completed,
         failed,

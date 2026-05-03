@@ -10,7 +10,7 @@ interface Props {
 
 export default function ChannelForm({ onCreated, onCancel }: Props) {
   const [saving, setSaving] = useState(false);
-  const [step, setStep] = useState<1 | 2>(1);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
 
   const [name, setName] = useState('');
   const [boards, setBoards] = useState<TrelloBoard[]>([]);
@@ -25,6 +25,10 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
   const [listSearch, setListSearch] = useState('');
 
   const [autoRun, setAutoRun] = useState(true);
+
+  // Script generation config
+  const [titleListId, setTitleListId] = useState('');
+  const [masterPrompt, setMasterPrompt] = useState('');
 
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(true);
@@ -135,6 +139,8 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
           name: name.trim(),
           trello_board_id: selectedBoard,
           trello_list_ids: selectedLists,
+          trello_title_list_id: titleListId || null,
+          master_prompt: masterPrompt.trim() || null,
           auto_run_enabled: autoRun,
           voice_config: { voiceId, speed, pitch, stability, style },
         }),
@@ -160,7 +166,9 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
           <div className="flex items-center gap-1.5">
             <StepPill n={1} active={step === 1} done={step > 1} label="Trello" onClick={() => setStep(1)} />
             <div className="w-5 h-px" style={{ background: 'var(--border)' }} />
-            <StepPill n={2} active={step === 2} done={false} label="Voice" onClick={() => canStep1 && setStep(2)} />
+            <StepPill n={2} active={step === 2} done={step > 2} label="Script" onClick={() => canStep1 ? setStep(2) : undefined} />
+            <div className="w-5 h-px" style={{ background: 'var(--border)' }} />
+            <StepPill n={3} active={step === 3} done={false} label="Voice" onClick={() => canStep1 ? setStep(3) : undefined} />
           </div>
         </div>
         <button onClick={onCancel} className="p-1.5 rounded-lg t" style={{ color: 'var(--text-muted)' }}>
@@ -265,7 +273,7 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
 
             {/* Lists — searchable multi-select */}
             {selectedBoard && (
-              <Field label="Lists to Monitor">
+              <Field label="Voiceover Source List (cards with scripts to convert to audio)">
                 {listsLoading ? <div className="h-16 shimmer" /> : lists.length === 0 ? (
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No lists found in this board.</p>
                 ) : (
@@ -346,8 +354,116 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
               </button>
             </div>
           </div>
+        ) : step === 2 ? (
+          /* ── Step 2: Script Generation (Optional) ── */
+          <div className="grid gap-5 fade-up">
+            <div
+              className="rounded-xl border p-4"
+              style={{ borderColor: 'var(--border-light)', background: 'var(--accent-muted)' }}
+            >
+              <p className="text-[12px] font-semibold" style={{ color: 'var(--accent-dark)' }}>
+                Optional: AI Script Generation
+              </p>
+              <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                Set up a title list and master prompt to automatically generate scripts from card titles using Claude AI. Skip this step if you only want voiceover processing.
+              </p>
+            </div>
+
+            {/* Title list selector */}
+            <Field label="Title List (cards whose titles will be used to generate scripts)">
+              {listsLoading ? <div className="h-10 shimmer" /> : lists.length === 0 ? (
+                <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Select a board in Step 1 first.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  {/* None option */}
+                  <button
+                    onClick={() => setTitleListId('')}
+                    className="h-8 px-3.5 rounded-lg text-xs font-semibold t border flex items-center gap-1.5"
+                    style={{
+                      background: !titleListId ? 'var(--accent)' : 'var(--surface)',
+                      borderColor: !titleListId ? 'var(--accent)' : 'var(--border)',
+                      color: !titleListId ? '#fff' : 'var(--text-secondary)',
+                      boxShadow: !titleListId ? 'var(--shadow-accent)' : 'none',
+                    }}
+                  >
+                    {!titleListId && (
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
+                    )}
+                    None (skip)
+                  </button>
+                  {lists.filter((l) => !selectedLists.includes(l.id)).map((l) => {
+                    const on = titleListId === l.id;
+                    return (
+                      <button
+                        key={l.id}
+                        onClick={() => setTitleListId(l.id)}
+                        className="h-8 px-3.5 rounded-lg text-xs font-semibold t border flex items-center gap-1.5"
+                        style={{
+                          background: on ? 'var(--accent)' : 'var(--surface)',
+                          borderColor: on ? 'var(--accent)' : 'var(--border)',
+                          color: on ? '#fff' : 'var(--text-secondary)',
+                          boxShadow: on ? 'var(--shadow-accent)' : 'none',
+                        }}
+                      >
+                        {on && (
+                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
+                        )}
+                        {l.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </Field>
+
+            {/* Master prompt */}
+            {titleListId && (
+              <Field label="Master Prompt">
+                <textarea
+                  value={masterPrompt}
+                  onChange={(e) => setMasterPrompt(e.target.value)}
+                  placeholder="Write the system prompt that will be used to generate scripts. The card title will be appended automatically.&#10;&#10;Example: You are a professional scriptwriter for a Hindi tech YouTube channel. Write an engaging voiceover script of about 800 words for the following topic. Use a conversational tone..."
+                  rows={6}
+                  style={{
+                    ...inputStyle,
+                    height: 'auto',
+                    padding: '12px',
+                    resize: 'vertical' as const,
+                    minHeight: '120px',
+                    lineHeight: '1.5',
+                  }}
+                />
+                {masterPrompt && (
+                  <p className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)' }}>
+                    {masterPrompt.length} characters
+                  </p>
+                )}
+              </Field>
+            )}
+
+            {/* Navigation */}
+            <div className="flex justify-between pt-1">
+              <button
+                onClick={() => setStep(1)}
+                className="h-10 px-4 rounded-xl text-[13px] font-semibold t flex items-center gap-2"
+                style={{ color: 'var(--text-secondary)', background: 'var(--surface-2)' }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
+                Back
+              </button>
+              <button
+                onClick={() => setStep(3)}
+                disabled={titleListId && !masterPrompt.trim() ? true : false}
+                className="h-10 px-5 rounded-xl text-[13px] font-semibold t flex items-center gap-2 disabled:opacity-30"
+                style={{ background: 'var(--accent)', color: '#fff', boxShadow: 'var(--shadow-accent)' }}
+              >
+                {titleListId ? 'Continue' : 'Skip to Voice'}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
+              </button>
+            </div>
+          </div>
         ) : (
-          /* ── Step 2: Voice ── */
+          /* ── Step 3: Voice ── */
           <div className="grid gap-5 fade-up">
             <Field label="Select Voice">
               {voicesLoading ? <div className="h-10 shimmer" /> : voicesError ? (
@@ -518,7 +634,7 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
             {/* Actions */}
             <div className="flex justify-between pt-1">
               <button
-                onClick={() => setStep(1)}
+                onClick={() => setStep(2)}
                 className="h-10 px-4 rounded-xl text-[13px] font-semibold t flex items-center gap-2"
                 style={{ color: 'var(--text-secondary)', background: 'var(--surface-2)' }}
               >
