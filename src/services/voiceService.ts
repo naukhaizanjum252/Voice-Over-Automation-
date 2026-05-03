@@ -123,8 +123,12 @@ export async function generateAudio(
 /**
  * Polls TTS job status until complete, then downloads the audio.
  */
-async function pollAndDownload(jobId: string): Promise<Buffer> {
+async function pollAndDownload(
+  jobId: string,
+  onStageChange?: (stage: 'queued' | 'generating') => void
+): Promise<Buffer> {
   let lastState = '';
+  let notifiedGenerating = false;
 
   for (let i = 0; i < TTS_POLL_MAX_ATTEMPTS; i++) {
     await sleep(TTS_POLL_INTERVAL_MS);
@@ -187,6 +191,11 @@ async function pollAndDownload(jobId: string): Promise<Buffer> {
 
     // PENDING / PROCESSING are expected in-progress states — keep polling
     if (['pending', 'processing', 'queued', 'running'].includes(stateLower)) {
+      // Notify UI when job moves from queued/pending to actively processing
+      if (!notifiedGenerating && ['processing', 'running'].includes(stateLower)) {
+        notifiedGenerating = true;
+        onStageChange?.('generating');
+      }
       continue;
     }
 

@@ -105,7 +105,9 @@ async function processCard(
     // Stage: queued (will move to 'generating' once 69 Labs starts processing)
     await updateStage(card.id, 'queued');
     console.log(`[processing] Generating audio for ${text.length} chars`);
-    const finalAudio = await generateAudio(text, channel.voice_config);
+    const finalAudio = await generateAudio(text, channel.voice_config, async (stage) => {
+      await updateStage(card.id, stage === 'generating' ? 'generating' : 'queued');
+    });
     console.log(`[processing] Audio ready: ${(finalAudio.length / 1024 / 1024).toFixed(2)} MB`);
 
     // Stage: uploading
