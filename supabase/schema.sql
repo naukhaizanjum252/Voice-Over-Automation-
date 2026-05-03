@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS channels (
     "voiceId": "EXAVITQu4vr4xnSDxMaL",
     "speed": 1.0,
     "pitch": 1.0,
-    "stability": 0.5
+    "stability": 0.5,
+    "style": 0.0
   }'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

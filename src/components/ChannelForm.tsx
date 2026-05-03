@@ -34,6 +34,7 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
   const [speed, setSpeed] = useState(1.0);
   const [pitch, setPitch] = useState(1.0);
   const [stability, setStability] = useState(0.5);
+  const [style, setStyle] = useState(0.0);
 
   const boardDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -135,7 +136,7 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
           trello_board_id: selectedBoard,
           trello_list_ids: selectedLists,
           auto_run_enabled: autoRun,
-          voice_config: { voiceId, speed, pitch, stability },
+          voice_config: { voiceId, speed, pitch, stability, style },
         }),
       });
       if (res.ok) onCreated();
@@ -367,26 +368,53 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
                 </div>
               ) : (
                 <>
-                  {/* Voice search + paste ID */}
-                  <div className="flex gap-2 mb-2">
-                    <div className="relative flex-1">
-                      <SearchIcon />
+                  {/* Voice search + paste ID — unified bar */}
+                  <div
+                    className="flex items-center mb-2 rounded-xl border overflow-hidden"
+                    style={{ borderColor: 'var(--border)', background: 'var(--surface)', height: '40px' }}
+                  >
+                    {/* Search section */}
+                    <div className="relative flex-1 h-full">
+                      <svg
+                        className="absolute left-3 top-1/2 -translate-y-1/2"
+                        width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                        style={{ color: 'var(--text-muted)' }}
+                      >
+                        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                      </svg>
                       <input
                         type="text"
                         value={voiceSearch}
                         onChange={(e) => setVoiceSearch(e.target.value)}
                         placeholder="Search by name, ID, accent, gender..."
-                        className="w-full"
-                        style={{ ...inputStyle, paddingLeft: '36px' }}
+                        className="w-full h-full"
+                        style={{
+                          padding: '0 12px 0 36px',
+                          fontSize: '13px',
+                          background: 'transparent',
+                          color: 'var(--text)',
+                          outline: 'none',
+                          border: 'none',
+                        }}
                       />
                     </div>
+                    {/* Divider */}
+                    <div className="w-px h-5" style={{ background: 'var(--border)' }} />
+                    {/* Paste voice ID section */}
                     <input
                       type="text"
                       value={voiceId}
                       onChange={(e) => setVoiceId(e.target.value)}
                       placeholder="Paste voice ID"
-                      className="w-[180px] shrink-0 font-mono text-[11px]"
-                      style={inputStyle}
+                      className="h-full shrink-0 font-mono text-[11px]"
+                      style={{
+                        width: '200px',
+                        padding: '0 12px',
+                        background: 'transparent',
+                        color: 'var(--text)',
+                        outline: 'none',
+                        border: 'none',
+                      }}
                     />
                   </div>
 
@@ -462,12 +490,29 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
 
             {/* Sliders */}
             <div
-              className="grid grid-cols-1 sm:grid-cols-3 gap-5 p-5 rounded-xl border"
+              className="rounded-xl border overflow-hidden"
               style={{ borderColor: 'var(--border-light)', background: 'var(--surface)' }}
             >
-              <Slider label="Speed" value={speed} onChange={setSpeed} min={0.5} max={2.0} step={0.1} unit="x" />
-              <Slider label="Pitch" value={pitch} onChange={setPitch} min={0.5} max={2.0} step={0.1} unit="x" />
-              <Slider label="Stability" value={stability} onChange={setStability} min={0} max={1} step={0.05} unit="" />
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 p-5">
+                <Slider label="Speed" value={speed} onChange={setSpeed} min={0.5} max={2.0} step={0.1} unit="x" />
+                <Slider label="Pitch" value={pitch} onChange={setPitch} min={0.5} max={2.0} step={0.1} unit="x" />
+                <Slider label="Stability" value={stability} onChange={setStability} min={0} max={1} step={0.05} unit="" />
+                <Slider label="Style Exaggeration" value={style} onChange={setStyle} min={0} max={1} step={0.05} unit="" />
+              </div>
+              <div className="px-5 pb-4 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => { setSpeed(1.0); setPitch(1.0); setStability(0.5); setStyle(0.0); }}
+                  className="text-[11px] font-semibold px-3 py-1.5 rounded-lg flex items-center gap-1.5 cursor-pointer hover:opacity-80"
+                  style={{ color: 'var(--text-secondary)', background: 'var(--surface-2)', border: '1px solid var(--border-light)' }}
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="1 4 1 10 7 10" />
+                    <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+                  </svg>
+                  Reset to defaults
+                </button>
+              </div>
             </div>
 
             {/* Actions */}

@@ -59,6 +59,7 @@ export async function generateAudio(
             stability: config.stability,
             similarity_boost: 0.75,
             speed: config.speed,
+            style: config.style ?? 0,
           },
         }),
         signal: AbortSignal.timeout(30000),

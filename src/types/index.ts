@@ -15,6 +15,7 @@ export interface VoiceConfig {
   speed: number;
   pitch: number;
   stability: number;
+  style: number;
 }
 
 export interface ProcessedCard {
