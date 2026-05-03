@@ -434,6 +434,14 @@ function CardRow({ card, onRefresh, last }: { card: ProcessedCard; onRefresh: ()
           {card.error_message}
         </p>
       )}
+      {card.status === 'completed' && card.error_message && (
+        <p
+          className="text-[11px] mt-1.5 break-words"
+          style={{ color: 'var(--text-muted)', wordBreak: 'break-word' }}
+        >
+          {card.error_message}
+        </p>
+      )}
     </div>
   );
 }
@@ -485,6 +493,14 @@ function ClockIcon() {
   return (
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+    </svg>
+  );
+}
+
+function PenIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
     </svg>
   );
 }
