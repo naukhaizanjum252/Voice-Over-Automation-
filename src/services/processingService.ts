@@ -76,7 +76,7 @@ async function processCard(
     .eq('trello_card_id', card.id)
     .single();
 
-  if (existing && existing.status === 'completed') {
+  if (existing && (existing.status === 'completed' || existing.status === 'processing')) {
     return { cardId: card.id, cardName: card.name, success: true };
   }
 
