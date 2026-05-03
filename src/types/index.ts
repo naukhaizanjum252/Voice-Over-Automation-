@@ -31,7 +31,7 @@ export interface ProcessedCard {
 }
 
 export type CardStatus = 'pending' | 'processing' | 'completed' | 'failed';
-export type ProcessingStage = 'downloading' | 'extracting' | 'generating' | 'uploading';
+export type ProcessingStage = 'downloading' | 'extracting' | 'generating' | 'queued' | 'uploading';
 
 // ── Trello Types ──
 

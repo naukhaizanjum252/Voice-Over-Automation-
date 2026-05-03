@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS processed_cards (
   status TEXT NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
   processing_stage TEXT DEFAULT NULL
-    CHECK (processing_stage IS NULL OR processing_stage IN ('downloading', 'extracting', 'generating', 'uploading')),
+    CHECK (processing_stage IS NULL OR processing_stage IN ('downloading', 'extracting', 'generating', 'queued', 'uploading')),
   error_message TEXT,
   attachment_url TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

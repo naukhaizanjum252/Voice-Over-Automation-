@@ -11,7 +11,8 @@ interface Props {
 const STAGES: { key: ProcessingStage; label: string }[] = [
   { key: 'downloading', label: 'Downloading' },
   { key: 'extracting', label: 'Extracting' },
-  { key: 'generating', label: 'Generating TTS' },
+  { key: 'queued', label: 'In Queue' },
+  { key: 'generating', label: 'Generating' },
   { key: 'uploading', label: 'Uploading' },
 ];
 

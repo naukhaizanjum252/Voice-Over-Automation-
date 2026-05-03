@@ -17,10 +17,10 @@ import { ELEVENLABS_VOICES } from '@/data/elevenlabs-voices';
  *   GET  /tts/download/{id}     → download audio file
  */
 const BASE = 'https://69labs.vip/api/v1';
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 2000;
-const TTS_POLL_INTERVAL_MS = 2000;
-const TTS_POLL_MAX_ATTEMPTS = 60; // 2 min max wait
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 3000;
+const TTS_POLL_INTERVAL_MS = 5000;
+const TTS_POLL_MAX_ATTEMPTS = 60; // ~5 min max wait
 
 function apiHeaders(): Record<string, string> {
   return {
@@ -40,7 +40,8 @@ function apiHeaders(): Record<string, string> {
  */
 export async function generateAudio(
   text: string,
-  config: VoiceConfig
+  config: VoiceConfig,
+  onStageChange?: (stage: 'queued' | 'generating') => void
 ): Promise<Buffer> {
   let lastError: Error | null = null;
 
@@ -65,33 +66,50 @@ export async function generateAudio(
 
       if (!generateRes.ok) {
         const errorText = await generateRes.text();
-        throw new Error(`69 Labs generate ${generateRes.status}: ${errorText}`);
+        const err = new Error(`69 Labs generate ${generateRes.status}: ${errorText}`);
+        // Don't retry on 400/401/403 — these are permanent failures
+        if (generateRes.status >= 400 && generateRes.status < 500) {
+          throw err;
+        }
+        throw err;
       }
 
       const generateData = await generateRes.json();
+      console.log(`[voiceService] Generate response keys: ${Object.keys(generateData).join(', ')}`);
+
       const jobId =
-        generateData.id ?? generateData.jobId ?? generateData.task_id;
+        generateData.id ?? generateData.jobId ?? generateData.task_id ?? generateData.ttsId;
 
       if (!jobId) {
         // Some endpoints return audio directly
         if (generateData.audio_url) {
           return await downloadFromUrl(generateData.audio_url);
         }
+        // If response has audio data inline
+        if (generateData.audio) {
+          return Buffer.from(generateData.audio, 'base64');
+        }
         throw new Error(
-          `No job ID in generate response: ${JSON.stringify(generateData).slice(0, 300)}`
+          `No job ID in generate response: ${JSON.stringify(generateData).slice(0, 500)}`
         );
       }
 
       console.log(`[voiceService] TTS job started: ${jobId}`);
 
       // Step 2: Poll → Step 3: Download
-      return await pollAndDownload(jobId);
+      return await pollAndDownload(jobId, onStageChange);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       console.error(
         `[voiceService] Attempt ${attempt}/${MAX_RETRIES} failed:`,
         lastError.message
       );
+
+      // Don't retry on client errors (4xx) — they won't succeed on retry
+      if (lastError.message.includes(' 400:') || lastError.message.includes(' 401:') ||
+          lastError.message.includes(' 403:') || lastError.message.includes(' 404:')) {
+        break;
+      }
 
       if (attempt < MAX_RETRIES) {
         await sleep(RETRY_DELAY_MS * attempt);
@@ -106,44 +124,87 @@ export async function generateAudio(
  * Polls TTS job status until complete, then downloads the audio.
  */
 async function pollAndDownload(jobId: string): Promise<Buffer> {
+  let lastState = '';
+
   for (let i = 0; i < TTS_POLL_MAX_ATTEMPTS; i++) {
     await sleep(TTS_POLL_INTERVAL_MS);
 
-    const statusRes = await fetch(`${BASE}/tts/status/${jobId}`, {
-      headers: apiHeaders(),
-      signal: AbortSignal.timeout(10000),
-    });
+    let statusRes: Response;
+    try {
+      statusRes = await fetch(`${BASE}/tts/status/${jobId}`, {
+        headers: apiHeaders(),
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch (fetchErr) {
+      console.error(`[voiceService] Poll fetch error (attempt ${i + 1}):`, fetchErr);
+      continue; // network glitch, keep polling
+    }
 
     if (!statusRes.ok) {
       const text = await statusRes.text();
+      // 404 might mean the job doesn't exist or endpoint is wrong
+      if (statusRes.status === 404) {
+        console.error(`[voiceService] Job ${jobId} not found (404), trying download directly...`);
+        try {
+          return await downloadTTS(jobId);
+        } catch {
+          throw new Error(`TTS job ${jobId} not found and download failed`);
+        }
+      }
       throw new Error(`TTS status check ${statusRes.status}: ${text}`);
     }
 
     const status = await statusRes.json();
     const state: string =
       (status.status ?? status.state ?? '') as string;
+    const queuePos = status.queuePosition;
 
-    console.log(`[voiceService] Job ${jobId}: ${state}`);
+    // Log on first poll or state change
+    if (state !== lastState || i === 0) {
+      const queueInfo = queuePos != null ? ` (queue #${queuePos})` : '';
+      console.log(`[voiceService] Job ${jobId} state: "${state}"${queueInfo} | startedAt: ${status.startedAt ?? 'null'}`);
+      lastState = state;
+    }
 
-    if (['completed', 'done', 'ready'].includes(state.toLowerCase())) {
-      // If status response includes a download URL, use it
-      const downloadUrl = status.download_url ?? status.audio_url ?? status.url;
+    const stateLower = state.toLowerCase();
+
+    if (['completed', 'done', 'ready', 'success'].includes(stateLower)) {
+      // Check for download URL in status response or outputMetadata
+      const meta = status.outputMetadata as Record<string, unknown> | null;
+      const downloadUrl = status.download_url ?? status.audio_url ?? status.url
+        ?? status.outputUrl ?? meta?.url ?? meta?.audioUrl;
       if (downloadUrl) {
         return await downloadFromUrl(downloadUrl as string);
       }
-      // Otherwise hit the standard download endpoint
       return await downloadTTS(jobId);
     }
 
-    if (['failed', 'error'].includes(state.toLowerCase())) {
+    if (['failed', 'error', 'cancelled', 'canceled'].includes(stateLower)) {
       throw new Error(
-        `TTS job failed: ${status.error ?? status.message ?? JSON.stringify(status)}`
+        `TTS job failed: ${status.error ?? status.message ?? status.errorMessage ?? JSON.stringify(status).slice(0, 300)}`
+      );
+    }
+
+    // PENDING / PROCESSING are expected in-progress states — keep polling
+    if (['pending', 'processing', 'queued', 'running'].includes(stateLower)) {
+      continue;
+    }
+
+    // Unknown state — log it but keep polling
+    if (stateLower) {
+      console.warn(`[voiceService] Job ${jobId} unknown state: "${state}" — continuing to poll`);
+    }
+
+    // If state is empty after 30 seconds, something's wrong
+    if (!stateLower && i >= 6) {
+      throw new Error(
+        `TTS job ${jobId} returned empty status after ${i * TTS_POLL_INTERVAL_MS / 1000}s. Response: ${JSON.stringify(status).slice(0, 300)}`
       );
     }
   }
 
   throw new Error(
-    `TTS job ${jobId} timed out after ${TTS_POLL_MAX_ATTEMPTS * TTS_POLL_INTERVAL_MS / 1000}s`
+    `TTS job ${jobId} timed out after ${TTS_POLL_MAX_ATTEMPTS * TTS_POLL_INTERVAL_MS / 1000}s. Last state: "${lastState}"`
   );
 }
 

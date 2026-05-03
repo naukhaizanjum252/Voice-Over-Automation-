@@ -102,8 +102,8 @@ async function processCard(
       throw new Error('Extracted text is empty');
     }
 
-    // Stage: generating
-    await updateStage(card.id, 'generating');
+    // Stage: queued (will move to 'generating' once 69 Labs starts processing)
+    await updateStage(card.id, 'queued');
     console.log(`[processing] Generating audio for ${text.length} chars`);
     const finalAudio = await generateAudio(text, channel.voice_config);
     console.log(`[processing] Audio ready: ${(finalAudio.length / 1024 / 1024).toFixed(2)} MB`);
