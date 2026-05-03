@@ -76,13 +76,13 @@ async function processCard(
     .eq('trello_card_id', card.id)
     .single();
 
-  if (existing && (existing.status === 'completed' || existing.status === 'processing')) {
+  if (existing && (existing.status === 'completed' || existing.status === 'processing' || existing.status === 'failed')) {
     return { cardId: card.id, cardName: card.name, success: true };
   }
 
   // Skip cards that already have audio attached — mark as completed
   if (trelloService.hasAudioAttachment(card.attachments || [])) {
-    await upsertCard(card.id, card.name, channel.id, 'completed', null, null, null);
+    await upsertCard(card.id, card.name, channel.id, 'completed', 'Skipped — voiceover already attached', null, null);
     return { cardId: card.id, cardName: card.name, success: true };
   }
 
