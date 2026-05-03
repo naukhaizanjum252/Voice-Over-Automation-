@@ -80,6 +80,12 @@ async function processCard(
     return { cardId: card.id, cardName: card.name, success: true };
   }
 
+  // Skip cards that already have audio attached — mark as completed
+  if (trelloService.hasAudioAttachment(card.attachments || [])) {
+    await upsertCard(card.id, card.name, channel.id, 'completed', null, null, null);
+    return { cardId: card.id, cardName: card.name, success: true };
+  }
+
   // Find script attachment
   const attachment = trelloService.getScriptAttachment(card.attachments || []);
   if (!attachment) {

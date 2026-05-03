@@ -105,6 +105,15 @@ export async function uploadAttachmentToCard(
   return res.json() as Promise<TrelloAttachment>;
 }
 
+/**
+ * Moves a card to a different list.
+ */
+export async function moveCardToList(cardId: string, listId: string): Promise<void> {
+  await trelloFetch(`/cards/${encodeURIComponent(cardId)}/idList?value=${encodeURIComponent(listId)}`, {
+    method: 'PUT',
+  });
+}
+
 export function getScriptAttachment(
   attachments: TrelloAttachment[]
 ): TrelloAttachment | null {
@@ -115,4 +124,12 @@ export function getScriptAttachment(
       return allowedExtensions.some((ext) => name.endsWith(ext));
     }) ?? null
   );
+}
+
+export function hasAudioAttachment(attachments: TrelloAttachment[]): boolean {
+  const audioExtensions = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.wma', '.opus'];
+  return attachments.some((att) => {
+    const name = att.name.toLowerCase();
+    return audioExtensions.some((ext) => name.endsWith(ext));
+  });
 }
