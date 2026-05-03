@@ -367,16 +367,26 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
                 </div>
               ) : (
                 <>
-                  {/* Voice search */}
-                  <div className="relative mb-2">
-                    <SearchIcon />
+                  {/* Voice search + paste ID */}
+                  <div className="flex gap-2 mb-2">
+                    <div className="relative flex-1">
+                      <SearchIcon />
+                      <input
+                        type="text"
+                        value={voiceSearch}
+                        onChange={(e) => setVoiceSearch(e.target.value)}
+                        placeholder="Search by name, ID, accent, gender..."
+                        className="w-full"
+                        style={{ ...inputStyle, paddingLeft: '36px' }}
+                      />
+                    </div>
                     <input
                       type="text"
-                      value={voiceSearch}
-                      onChange={(e) => setVoiceSearch(e.target.value)}
-                      placeholder="Search by name, accent, gender..."
-                      className="w-full"
-                      style={{ ...inputStyle, paddingLeft: '36px' }}
+                      value={voiceId}
+                      onChange={(e) => setVoiceId(e.target.value)}
+                      placeholder="Paste voice ID"
+                      className="w-[180px] shrink-0 font-mono text-[11px]"
+                      style={inputStyle}
                     />
                   </div>
 
