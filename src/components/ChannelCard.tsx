@@ -344,6 +344,7 @@ function StageStepper({ card }: { card: ProcessedCard }) {
 
 function CardRow({ card, onRefresh, last }: { card: ProcessedCard; onRefresh: () => void; last: boolean }) {
   const [retrying, setRetrying] = useState(false);
+  const [manualAction, setManualAction] = useState<'full' | 'voiceover' | null>(null);
 
   const retry = async () => {
     setRetrying(true);
@@ -356,6 +357,19 @@ function CardRow({ card, onRefresh, last }: { card: ProcessedCard; onRefresh: ()
       onRefresh();
     } catch (err) { console.error(err); }
     finally { setRetrying(false); }
+  };
+
+  const manualRun = async (action: 'full' | 'voiceover') => {
+    setManualAction(action);
+    try {
+      await fetch('/api/card/manual-run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cardId: card.id, action }),
+      });
+      onRefresh();
+    } catch (err) { console.error(err); }
+    finally { setManualAction(null); }
   };
 
   const statusColor = card.status === 'completed' ? 'var(--success)'
@@ -423,6 +437,31 @@ function CardRow({ card, onRefresh, last }: { card: ProcessedCard; onRefresh: ()
               <DownloadIcon size={10} />
               Audio
             </a>
+          )}
+          {/* Manual triggers — available for all non-processing cards */}
+          {card.status !== 'processing' && (
+            <>
+              <button
+                onClick={() => manualRun('voiceover')}
+                disabled={manualAction !== null}
+                className="h-7 px-2.5 rounded-lg text-[10px] font-bold shrink-0 t flex items-center gap-1 disabled:opacity-40 border"
+                style={{ borderColor: 'var(--accent)', color: 'var(--accent)', background: manualAction === 'voiceover' ? 'var(--accent-muted)' : 'transparent' }}
+                title="Re-generate voiceover only"
+              >
+                {manualAction === 'voiceover' ? <Spinner /> : <VoiceIcon size={10} />}
+                Voice
+              </button>
+              <button
+                onClick={() => manualRun('full')}
+                disabled={manualAction !== null}
+                className="h-7 px-2.5 rounded-lg text-[10px] font-bold shrink-0 t flex items-center gap-1 disabled:opacity-40 border"
+                style={{ borderColor: 'var(--text-muted)', color: 'var(--text-muted)', background: manualAction === 'full' ? 'var(--surface-2)' : 'transparent' }}
+                title="Re-run full pipeline (download, extract, generate, upload)"
+              >
+                {manualAction === 'full' ? <Spinner /> : <RefreshIcon size={10} />}
+                Full
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -525,6 +564,15 @@ function DownloadIcon({ size = 12 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+  );
+}
+
+function VoiceIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
     </svg>
   );
 }

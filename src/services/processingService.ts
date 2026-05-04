@@ -171,6 +171,98 @@ export async function retryCard(processedCardId: string): Promise<ProcessingResu
   return processCard(card, channel);
 }
 
+/**
+ * Manual trigger: re-runs the FULL pipeline for a card (download → extract → TTS → upload).
+ * Ignores current status — always reprocesses from scratch.
+ */
+export async function manualRunFull(processedCardId: string): Promise<ProcessingResult> {
+  const { data: record, error } = await supabase
+    .from('processed_cards')
+    .select('*, channels(*)')
+    .eq('id', processedCardId)
+    .single();
+
+  if (error || !record) throw new Error('Card record not found');
+
+  const channel = record.channels as Channel;
+  const trelloCardId = record.trello_card_id;
+
+  // Reset status so processCard doesn't skip it
+  await supabase
+    .from('processed_cards')
+    .update({ status: 'pending', processing_stage: null, error_message: null, updated_at: new Date().toISOString() })
+    .eq('id', processedCardId);
+
+  // Fetch fresh card data directly by ID
+  const card = await trelloService.getCardById(trelloCardId);
+  return processCard(card, channel);
+}
+
+/**
+ * Manual trigger: re-runs ONLY the voiceover generation (TTS → upload).
+ * Reuses the existing script attachment — skips download & extract if text can be reused.
+ */
+export async function manualRunVoiceover(processedCardId: string): Promise<ProcessingResult> {
+  const { data: record, error } = await supabase
+    .from('processed_cards')
+    .select('*, channels(*)')
+    .eq('id', processedCardId)
+    .single();
+
+  if (error || !record) throw new Error('Card record not found');
+
+  const channel = record.channels as Channel;
+  const trelloCardId = record.trello_card_id;
+
+  // Fetch fresh card data
+  const card = await trelloService.getCardById(trelloCardId);
+
+  // Find script attachment
+  const attachment = trelloService.getScriptAttachment(card.attachments || []);
+  if (!attachment) {
+    throw new Error('No script attachment found on this card');
+  }
+
+  // Mark as processing
+  await upsertCard(trelloCardId, card.name, channel.id, 'processing', null, null, 'downloading');
+
+  try {
+    // 1. Download script
+    console.log(`[manual-voiceover] Downloading attachment: ${attachment.name}`);
+    const fileBuffer = await trelloService.downloadAttachment(attachment.url);
+
+    // 2. Extract text
+    await updateStage(trelloCardId, 'extracting');
+    const text = await extractText(fileBuffer, attachment.name);
+
+    if (!text || text.trim().length === 0) {
+      throw new Error('Extracted text is empty');
+    }
+
+    // 3. Generate audio (skip script generation — go straight to TTS)
+    await updateStage(trelloCardId, 'queued');
+    console.log(`[manual-voiceover] Generating audio for ${text.length} chars`);
+    const finalAudio = await generateAudio(text, channel.voice_config, async (stage) => {
+      await updateStage(trelloCardId, stage === 'generating' ? 'generating' : 'queued');
+    });
+    console.log(`[manual-voiceover] Audio ready: ${(finalAudio.length / 1024 / 1024).toFixed(2)} MB`);
+
+    // 4. Upload to Trello
+    await updateStage(trelloCardId, 'uploading');
+    const sanitizedName = card.name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
+    const fileName = `${sanitizedName}_voiceover.mp3`;
+    const uploaded = await trelloService.uploadAttachmentToCard(card.id, fileName, finalAudio);
+
+    // Done
+    await upsertCard(trelloCardId, card.name, channel.id, 'completed', null, uploaded.url, null);
+    return { cardId: card.id, cardName: card.name, success: true };
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await upsertCard(trelloCardId, card.name, channel.id, 'failed', errMsg, null, null);
+    return { cardId: card.id, cardName: card.name, success: false, error: errMsg };
+  }
+}
+
 // ── Helpers ──
 
 async function upsertCard(
