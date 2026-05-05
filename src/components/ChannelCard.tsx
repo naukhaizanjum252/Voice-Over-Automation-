@@ -204,7 +204,7 @@ export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
         {processingCards.length > 0 && (
           <div className="mt-4 space-y-3">
             {processingCards.map((card) => (
-              <StageStepper key={card.id} card={card} />
+              <StageStepper key={card.id} card={card} onRefresh={onRefresh} />
             ))}
           </div>
         )}
@@ -280,15 +280,41 @@ export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
 
 /* ── Sub-components ── */
 
-function StageStepper({ card }: { card: ProcessedCard }) {
+function StageStepper({ card, onRefresh }: { card: ProcessedCard; onRefresh: () => void }) {
+  const [terminating, setTerminating] = useState(false);
   const currentStage = card.processing_stage;
   const currentIdx = currentStage ? STAGES.findIndex((s) => s.key === currentStage) : -1;
 
+  const handleTerminate = async () => {
+    setTerminating(true);
+    try {
+      await fetch('/api/card/terminate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cardId: card.id }),
+      });
+      onRefresh();
+    } catch (err) { console.error(err); }
+    finally { setTerminating(false); }
+  };
+
   return (
     <div className="rounded-xl p-3.5" style={{ background: 'var(--warning-muted)', border: '1px solid var(--warning)' }}>
-      <p className="text-[12px] font-semibold truncate mb-2.5" style={{ color: 'var(--text)' }}>
-        {card.card_name || card.trello_card_id}
-      </p>
+      <div className="flex items-center justify-between mb-2.5">
+        <p className="text-[12px] font-semibold truncate" style={{ color: 'var(--text)' }}>
+          {card.card_name || card.trello_card_id}
+        </p>
+        <button
+          onClick={handleTerminate}
+          disabled={terminating}
+          className="h-6 px-2 rounded-md text-[10px] font-bold shrink-0 t flex items-center gap-1 disabled:opacity-40"
+          style={{ background: 'var(--danger-muted)', color: 'var(--danger)', border: '1px solid var(--danger)' }}
+          title="Terminate this process"
+        >
+          {terminating ? <Spinner /> : <StopIcon size={9} />}
+          Stop
+        </button>
+      </div>
       <div className="flex items-center gap-1">
         {STAGES.map((stage, idx) => {
           const isDone = idx < currentIdx;
@@ -582,6 +608,14 @@ function DownloadIcon({ size = 12 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+  );
+}
+
+function StopIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <rect x="4" y="4" width="16" height="16" rx="2" />
     </svg>
   );
 }
