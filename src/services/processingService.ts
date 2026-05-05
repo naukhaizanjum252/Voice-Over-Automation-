@@ -4,8 +4,33 @@ import * as trelloService from './trelloService';
 import { extractText } from './fileParserService';
 import { generateAudio } from './voiceService';
 
+const CONCURRENCY_LIMIT = 5;
+
+/**
+ * Runs async tasks with a concurrency limit.
+ */
+async function runWithConcurrency<T>(
+  tasks: (() => Promise<T>)[],
+  limit: number
+): Promise<T[]> {
+  const results: T[] = [];
+  let index = 0;
+
+  async function worker() {
+    while (index < tasks.length) {
+      const current = index++;
+      results[current] = await tasks[current]();
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
 /**
  * Processes all active channels. Called by cron or manual trigger.
+ * Channels are processed in parallel (up to CONCURRENCY_LIMIT).
  */
 export async function processAllChannels(): Promise<ProcessingResult[]> {
   console.log('[cron] Fetching auto-run channels...');
@@ -22,44 +47,43 @@ export async function processAllChannels(): Promise<ProcessingResult[]> {
     return [];
   }
 
-  const results: ProcessingResult[] = [];
-  for (const channel of channels) {
-    const channelResults = await processChannel(channel as Channel);
-    results.push(...channelResults);
-  }
-  return results;
+  const tasks = channels.map((channel) => () => processChannel(channel as Channel));
+  const channelResults = await runWithConcurrency(tasks, CONCURRENCY_LIMIT);
+  return channelResults.flat();
 }
 
 /**
  * Processes a single channel: fetches cards, extracts scripts, generates audio.
+ * Cards within a channel are processed in parallel (up to CONCURRENCY_LIMIT).
  */
 export async function processChannel(
   channel: Channel
 ): Promise<ProcessingResult[]> {
-  const results: ProcessingResult[] = [];
-
+  // Gather all cards from all lists
+  const allCards: TrelloCard[] = [];
   for (const listId of channel.trello_list_ids) {
-    let cards: TrelloCard[];
     try {
-      cards = await trelloService.getCardsInList(listId);
+      const cards = await trelloService.getCardsInList(listId);
+      allCards.push(...cards);
     } catch (err) {
       console.error(`[processing] Failed to fetch list ${listId}:`, err);
-      continue;
-    }
-
-    for (const card of cards) {
-      try {
-        const result = await processCard(card, channel);
-        results.push(result);
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[processing] Card ${card.id} error:`, errMsg);
-        results.push({ cardId: card.id, cardName: card.name, success: false, error: errMsg });
-      }
     }
   }
 
-  return results;
+  if (allCards.length === 0) return [];
+
+  // Process cards in parallel with concurrency limit
+  const tasks = allCards.map((card) => async () => {
+    try {
+      return await processCard(card, channel);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[processing] Card ${card.id} error:`, errMsg);
+      return { cardId: card.id, cardName: card.name, success: false, error: errMsg } as ProcessingResult;
+    }
+  });
+
+  return runWithConcurrency(tasks, CONCURRENCY_LIMIT);
 }
 
 /**
