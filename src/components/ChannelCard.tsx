@@ -6,6 +6,7 @@ import type { ChannelStats, ProcessedCard, ProcessingStage } from '@/types';
 interface Props {
   stats: ChannelStats;
   onRefresh: () => void;
+  onEdit?: (channelId: string) => void;
 }
 
 const STAGES: { key: ProcessingStage; label: string }[] = [
@@ -16,7 +17,7 @@ const STAGES: { key: ProcessingStage; label: string }[] = [
   { key: 'uploading', label: 'Uploading' },
 ];
 
-export default function ChannelCard({ stats, onRefresh }: Props) {
+export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
   const { channel, total, completed, failed, processing, lastRun, cards } = stats;
   const [expanded, setExpanded] = useState(false);
   const [running, setRunning] = useState(false);
@@ -144,6 +145,14 @@ export default function ChannelCard({ stats, onRefresh }: Props) {
                 )}
               </button>
             )}
+            <button
+              onClick={() => onEdit?.(channel.id)}
+              className="h-9 w-9 rounded-xl t flex items-center justify-center"
+              style={{ color: 'var(--text-muted)' }}
+              title="Edit channel"
+            >
+              <EditIcon size={14} />
+            </button>
             <button
               onClick={() => setConfirmDelete(true)}
               className="h-9 w-9 rounded-xl t flex items-center justify-center"
@@ -548,6 +557,15 @@ function CheckCircleIcon() {
   return (
     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" />
+    </svg>
+  );
+}
+
+function EditIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
     </svg>
   );
 }

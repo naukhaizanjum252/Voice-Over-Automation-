@@ -1,40 +1,42 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import type { TrelloBoard, TrelloList, Voice } from '@/types';
+import type { TrelloBoard, TrelloList, Voice, Channel } from '@/types';
 
 interface Props {
   onCreated: () => void;
   onCancel: () => void;
+  editChannel?: Channel | null;
 }
 
-export default function ChannelForm({ onCreated, onCancel }: Props) {
+export default function ChannelForm({ onCreated, onCancel, editChannel }: Props) {
+  const isEdit = !!editChannel;
   const [saving, setSaving] = useState(false);
   const [step, setStep] = useState<1 | 2>(1);
 
-  const [name, setName] = useState('');
+  const [name, setName] = useState(editChannel?.name ?? '');
   const [boards, setBoards] = useState<TrelloBoard[]>([]);
   const [boardsLoading, setBoardsLoading] = useState(true);
-  const [selectedBoard, setSelectedBoard] = useState('');
+  const [selectedBoard, setSelectedBoard] = useState(editChannel?.trello_board_id ?? '');
   const [boardSearch, setBoardSearch] = useState('');
   const [boardDropdownOpen, setBoardDropdownOpen] = useState(false);
 
   const [lists, setLists] = useState<TrelloList[]>([]);
   const [listsLoading, setListsLoading] = useState(false);
-  const [selectedLists, setSelectedLists] = useState<string[]>([]);
+  const [selectedLists, setSelectedLists] = useState<string[]>(editChannel?.trello_list_ids ?? []);
   const [listSearch, setListSearch] = useState('');
 
-  const [autoRun, setAutoRun] = useState(true);
+  const [autoRun, setAutoRun] = useState(editChannel?.auto_run_enabled ?? true);
 
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(true);
   const [voicesError, setVoicesError] = useState('');
-  const [voiceId, setVoiceId] = useState('');
+  const [voiceId, setVoiceId] = useState(editChannel?.voice_config?.voiceId ?? '');
   const [voiceSearch, setVoiceSearch] = useState('');
-  const [speed, setSpeed] = useState(1.0);
-  const [pitch, setPitch] = useState(1.0);
-  const [stability, setStability] = useState(0.5);
-  const [style, setStyle] = useState(0.0);
+  const [speed, setSpeed] = useState(editChannel?.voice_config?.speed ?? 1.0);
+  const [pitch, setPitch] = useState(editChannel?.voice_config?.pitch ?? 1.0);
+  const [stability, setStability] = useState(editChannel?.voice_config?.stability ?? 0.5);
+  const [style, setStyle] = useState(editChannel?.voice_config?.style ?? 0.0);
 
   const boardDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -80,8 +82,12 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
   }, []);
 
   // Fetch lists when board changes
+  const prevBoardRef = useRef(selectedBoard);
   useEffect(() => {
     if (!selectedBoard) { setLists([]); setSelectedLists([]); return; }
+    const boardActuallyChanged = prevBoardRef.current !== selectedBoard;
+    prevBoardRef.current = selectedBoard;
+
     setListsLoading(true);
     fetch(`/api/trello/lists?boardId=${encodeURIComponent(selectedBoard)}`)
       .then(async (r) => {
@@ -92,7 +98,13 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
         }
         return r.json();
       })
-      .then((d) => { if (Array.isArray(d)) setLists(d); setSelectedLists([]); })
+      .then((d) => {
+        if (Array.isArray(d)) setLists(d);
+        // Only reset selection when user actively switches to a different board
+        if (boardActuallyChanged) {
+          setSelectedLists([]);
+        }
+      })
       .catch(console.error)
       .finally(() => setListsLoading(false));
   }, [selectedBoard]);
@@ -128,20 +140,29 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
     if (!canSubmit) return;
     setSaving(true);
     try {
-      const res = await fetch('/api/channel/create', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: name.trim(),
-          trello_board_id: selectedBoard,
-          trello_list_ids: selectedLists,
-          auto_run_enabled: autoRun,
-          voice_config: { voiceId, speed, pitch, stability, style },
-        }),
-      });
+      const payload = {
+        name: name.trim(),
+        trello_board_id: selectedBoard,
+        trello_list_ids: selectedLists,
+        auto_run_enabled: autoRun,
+        voice_config: { voiceId, speed, pitch, stability, style },
+      };
+
+      const res = isEdit
+        ? await fetch('/api/channel/update', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: editChannel!.id, ...payload }),
+          })
+        : await fetch('/api/channel/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+
       if (res.ok) onCreated();
       else { const e = await res.json(); alert(`Error: ${e.error}`); }
-    } catch { alert('Failed to create channel'); }
+    } catch { alert(`Failed to ${isEdit ? 'update' : 'create'} channel`); }
     finally { setSaving(false); }
   };
 
@@ -156,7 +177,7 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
         style={{ borderColor: 'var(--border-light)', background: 'var(--surface)' }}
       >
         <div className="flex items-center gap-5">
-          <h2 className="text-[15px] font-bold" style={{ color: 'var(--text)' }}>New Channel</h2>
+          <h2 className="text-[15px] font-bold" style={{ color: 'var(--text)' }}>{isEdit ? 'Edit Channel' : 'New Channel'}</h2>
           <div className="flex items-center gap-1.5">
             <StepPill n={1} active={step === 1} done={step > 1} label="Trello" onClick={() => setStep(1)} />
             <div className="w-5 h-px" style={{ background: 'var(--border)' }} />
@@ -328,7 +349,7 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
               <div>
                 <p className="text-[13px] font-semibold" style={{ color: 'var(--text)' }}>Auto Processing</p>
                 <p className="text-[11px] mt-0.5" style={{ color: 'var(--text-muted)' }}>
-                  Automatically process new cards every 10 minutes
+                  Automatically process new cards every 5 minutes
                 </p>
               </div>
               <Toggle on={autoRun} onChange={setAutoRun} />
@@ -534,11 +555,11 @@ export default function ChannelForm({ onCreated, onCancel }: Props) {
                 {saving ? (
                   <>
                     <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
-                    Creating...
+                    {isEdit ? 'Saving...' : 'Creating...'}
                   </>
                 ) : (
                   <>
-                    Create Channel
+                    {isEdit ? 'Save Changes' : 'Create Channel'}
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="20 6 9 17 4 12" /></svg>
                   </>
                 )}

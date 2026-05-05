@@ -3,14 +3,16 @@
 import { useState, useEffect, useCallback } from 'react';
 import ChannelForm from '@/components/ChannelForm';
 import ChannelList from '@/components/ChannelList';
-import StatsOverview from '@/components/StatsOverview';
-import type { ChannelStats } from '@/types';
+import StatsOverview, { type StatsFilter } from '@/components/StatsOverview';
+import type { ChannelStats, Channel } from '@/types';
 
 export default function Dashboard() {
   const [stats, setStats] = useState<ChannelStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
   const [runningAll, setRunningAll] = useState(false);
+  const [statsFilter, setStatsFilter] = useState<StatsFilter>(null);
 
   const fetchChannels = useCallback(async () => {
     try {
@@ -147,14 +149,17 @@ export default function Dashboard() {
           failed={totalFailed}
           processing={totalProcessing}
           loading={loading}
+          activeFilter={statsFilter}
+          onFilter={setStatsFilter}
         />
 
         {/* Form */}
-        {showForm && (
+        {(showForm || editingChannel) && (
           <div className="mt-7 fade-up">
             <ChannelForm
-              onCreated={() => { fetchChannels(); setShowForm(false); }}
-              onCancel={() => setShowForm(false)}
+              editChannel={editingChannel}
+              onCreated={() => { fetchChannels(); setShowForm(false); setEditingChannel(null); }}
+              onCancel={() => { setShowForm(false); setEditingChannel(null); }}
             />
           </div>
         )}
@@ -200,7 +205,26 @@ export default function Dashboard() {
               </button>
             </div>
           ) : (
-            <ChannelList stats={stats} onRefresh={fetchChannels} />
+            <ChannelList
+              stats={
+                statsFilter
+                  ? stats.filter((s) =>
+                      statsFilter === 'completed' ? s.completed > 0
+                      : statsFilter === 'failed' ? s.failed > 0
+                      : statsFilter === 'processing' ? s.processing > 0
+                      : true
+                    )
+                  : stats
+              }
+              onRefresh={fetchChannels}
+              onEdit={(channelId) => {
+                const found = stats.find((s) => s.channel.id === channelId);
+                if (found) {
+                  setEditingChannel(found.channel);
+                  setShowForm(false);
+                }
+              }}
+            />
           )}
         </div>
       </main>

@@ -1,5 +1,7 @@
 'use client';
 
+export type StatsFilter = 'completed' | 'failed' | 'processing' | null;
+
 interface Props {
   channels: number;
   processed: number;
@@ -7,6 +9,8 @@ interface Props {
   failed: number;
   processing: number;
   loading: boolean;
+  activeFilter?: StatsFilter;
+  onFilter?: (filter: StatsFilter) => void;
 }
 
 const cards = [
@@ -77,41 +81,58 @@ export default function StatsOverview({
   failed,
   processing,
   loading,
+  activeFilter,
+  onFilter,
 }: Props) {
   const values: Record<string, number> = { channels, processed, completed, failed, processing };
+  const filterableKeys = ['completed', 'failed', 'processing'];
 
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-      {cards.map((card) => (
-        <div
-          key={card.key}
-          className="rounded-2xl border p-4 t"
-          style={{
-            background: 'var(--surface)',
-            borderColor: 'var(--border-light)',
-            boxShadow: 'var(--shadow-sm)',
-          }}
-        >
-          <div className="flex items-center gap-2.5 mb-3.5">
-            <div
-              className="w-9 h-9 rounded-xl flex items-center justify-center"
-              style={{ background: card.bg, color: card.color }}
-            >
-              {card.icon}
+      {cards.map((card) => {
+        const isFilterable = filterableKeys.includes(card.key);
+        const isActive = activeFilter === card.key;
+
+        return (
+          <div
+            key={card.key}
+            onClick={() => {
+              if (!isFilterable || !onFilter) return;
+              onFilter(isActive ? null : (card.key as StatsFilter));
+            }}
+            className={`rounded-2xl border p-4 t ${isFilterable ? 'cursor-pointer hover:opacity-80' : ''}`}
+            style={{
+              background: 'var(--surface)',
+              borderColor: isActive ? card.color : 'var(--border-light)',
+              boxShadow: isActive ? `0 0 0 1px ${card.color}` : 'var(--shadow-sm)',
+            }}
+          >
+            <div className="flex items-center gap-2.5 mb-3.5">
+              <div
+                className="w-9 h-9 rounded-xl flex items-center justify-center"
+                style={{ background: card.bg, color: card.color }}
+              >
+                {card.icon}
+              </div>
+              {isActive && (
+                <span className="text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-md" style={{ background: card.bg, color: card.color }}>
+                  Filtered
+                </span>
+              )}
+            </div>
+            {loading ? (
+              <div className="h-8 w-14 shimmer" />
+            ) : (
+              <div className="text-[22px] font-bold tracking-tight" style={{ color: card.color }}>
+                {values[card.key]}
+              </div>
+            )}
+            <div className="text-[11px] font-medium mt-0.5" style={{ color: 'var(--text-muted)' }}>
+              {card.label}
             </div>
           </div>
-          {loading ? (
-            <div className="h-8 w-14 shimmer" />
-          ) : (
-            <div className="text-[22px] font-bold tracking-tight" style={{ color: card.color }}>
-              {values[card.key]}
-            </div>
-          )}
-          <div className="text-[11px] font-medium mt-0.5" style={{ color: 'var(--text-muted)' }}>
-            {card.label}
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
