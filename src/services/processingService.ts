@@ -176,22 +176,14 @@ export async function retryCard(processedCardId: string): Promise<ProcessingResu
   const channel = record.channels as Channel;
   const trelloCardId = record.trello_card_id;
 
-  // Fetch fresh card data from Trello
-  const cards = await trelloService.getCardsInList(channel.trello_list_ids[0]);
-  const card = cards.find((c) => c.id === trelloCardId);
+  // Reset status to pending so processCard doesn't skip it
+  await supabase
+    .from('processed_cards')
+    .update({ status: 'pending', processing_stage: null, error_message: null, updated_at: new Date().toISOString() })
+    .eq('id', processedCardId);
 
-  if (!card) {
-    // Try fetching from all lists
-    for (const listId of channel.trello_list_ids) {
-      const listCards = await trelloService.getCardsInList(listId);
-      const found = listCards.find((c) => c.id === trelloCardId);
-      if (found) {
-        return processCard(found, channel);
-      }
-    }
-    throw new Error('Card no longer found in Trello');
-  }
-
+  // Fetch fresh card data directly by ID
+  const card = await trelloService.getCardById(trelloCardId);
   return processCard(card, channel);
 }
 
