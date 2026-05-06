@@ -6,6 +6,9 @@ export const env = {
   labs69: {
     apiKey: process.env.LABS69_API_KEY!,
   },
+  ai84: {
+    apiKey: process.env.AI84_API_KEY || '',
+  },
   supabase: {
     url: process.env.NEXT_PUBLIC_SUPABASE_URL!,
     anonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
