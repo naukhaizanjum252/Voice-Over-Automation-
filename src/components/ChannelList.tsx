@@ -7,9 +7,10 @@ import ChannelCard from './ChannelCard';
 interface Props {
   stats: ChannelStats[];
   onRefresh: () => void;
+  onEdit?: (channelId: string) => void;
 }
 
-export default function ChannelList({ stats, onRefresh }: Props) {
+export default function ChannelList({ stats, onRefresh, onEdit }: Props) {
   const [search, setSearch] = useState('');
 
   const q = search.toLowerCase().trim();
@@ -56,7 +57,7 @@ export default function ChannelList({ stats, onRefresh }: Props) {
         <div className="grid gap-4">
           {filtered.map((s, i) => (
             <div key={s.channel.id} className="fade-up" style={{ animationDelay: `${i * 60}ms` }}>
-              <ChannelCard stats={s} onRefresh={onRefresh} />
+              <ChannelCard stats={s} onRefresh={onRefresh} onEdit={onEdit} />
             </div>
           ))}
         </div>

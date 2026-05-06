@@ -1,6 +1,7 @@
 import { env } from '@/lib/env';
 import type { VoiceConfig, Voice } from '@/types';
 import { ELEVENLABS_VOICES } from '@/data/elevenlabs-voices';
+import * as ai84Service from './ai84Service';
 
 /**
  * 69 Labs External API
@@ -15,12 +16,14 @@ import { ELEVENLABS_VOICES } from '@/data/elevenlabs-voices';
  *   POST /voice-clones/generate → returns job { id }
  *   GET  /tts/status/{id}       → poll until ready
  *   GET  /tts/download/{id}     → download audio file
+ *
+ * Fallback: AI84.pro — used when 69 Labs fails or doesn't respond.
  */
 const BASE = 'https://69labs.vip/api/v1';
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 3000;
 const TTS_POLL_INTERVAL_MS = 5000;
-const TTS_POLL_MAX_ATTEMPTS = 60; // ~5 min max wait
+const TTS_POLL_MAX_ATTEMPTS = 24; // ~2 min max wait
 
 function apiHeaders(): Record<string, string> {
   return {
@@ -30,15 +33,68 @@ function apiHeaders(): Record<string, string> {
   };
 }
 
-// ── TTS (async: generate → poll → download) ──
+// ── TTS with automatic fallback ──
 
 /**
- * Generates audio for a single text chunk using 69 Labs async TTS.
- * 1. POST /voice-clones/generate  → start job
+ * Generates audio using 69 Labs as primary, AI84.pro as fallback.
+ * Falls back when 69 Labs throws any error or times out.
+ */
+export async function generateAudio(
+  text: string,
+  config: VoiceConfig,
+  onStageChange?: (stage: 'queued' | 'generating') => void
+): Promise<Buffer> {
+  try {
+    return await generateAudioWith69Labs(text, config, onStageChange);
+  } catch (primaryError) {
+    const errMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
+    console.error(`[voiceService] 69 Labs failed: ${errMsg}`);
+
+    // Check if AI84 fallback is configured
+    if (!env.ai84.apiKey) {
+      console.error('[voiceService] AI84 fallback not configured (no API key). Re-throwing 69 Labs error.');
+      throw primaryError;
+    }
+
+    console.log('[voiceService] Falling back to AI84.pro...');
+
+    // Look up the source voice name and gender so AI84 can find the best match
+    let sourceName: string | undefined;
+    let sourceGender: string | undefined;
+    try {
+      const allVoices = await getVoices();
+      const sourceVoice = allVoices.find((v) => v.voice_id === config.voiceId);
+      if (sourceVoice) {
+        sourceName = sourceVoice.name;
+        sourceGender = sourceVoice.labels?.gender;
+        console.log(`[voiceService] Source voice for matching: "${sourceName}" (${sourceGender ?? 'unknown gender'})`);
+      }
+    } catch {
+      console.warn('[voiceService] Could not fetch source voice info for matching');
+    }
+
+    try {
+      const audio = await ai84Service.generateAudio(text, config, onStageChange, sourceName, sourceGender);
+      console.log('[voiceService] AI84 fallback succeeded.');
+      return audio;
+    } catch (fallbackError) {
+      const fallbackMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      console.error(`[voiceService] AI84 fallback also failed: ${fallbackMsg}`);
+      // Throw a combined error so the user sees both failures
+      throw new Error(
+        `TTS failed on both providers. 69 Labs: ${errMsg} | AI84: ${fallbackMsg}`
+      );
+    }
+  }
+}
+
+/**
+ * Generates audio using 69 Labs async TTS (primary provider).
+ * 1. POST /tts/generate  → start job
  * 2. Poll GET /tts/status/{id}    → wait for completion
  * 3. GET  /tts/download/{id}      → download audio
  */
-export async function generateAudio(
+async function generateAudioWith69Labs(
   text: string,
   config: VoiceConfig,
   onStageChange?: (stage: 'queued' | 'generating') => void
@@ -102,7 +158,7 @@ export async function generateAudio(
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       console.error(
-        `[voiceService] Attempt ${attempt}/${MAX_RETRIES} failed:`,
+        `[voiceService] 69 Labs attempt ${attempt}/${MAX_RETRIES} failed:`,
         lastError.message
       );
 
@@ -118,7 +174,7 @@ export async function generateAudio(
     }
   }
 
-  throw lastError ?? new Error('Voice generation failed after retries');
+  throw lastError ?? new Error('69 Labs voice generation failed after retries');
 }
 
 /**

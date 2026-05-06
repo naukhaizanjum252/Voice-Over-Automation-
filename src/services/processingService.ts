@@ -4,8 +4,33 @@ import * as trelloService from './trelloService';
 import { extractText } from './fileParserService';
 import { generateAudio } from './voiceService';
 
+const CONCURRENCY_LIMIT = 5;
+
+/**
+ * Runs async tasks with a concurrency limit.
+ */
+async function runWithConcurrency<T>(
+  tasks: (() => Promise<T>)[],
+  limit: number
+): Promise<T[]> {
+  const results: T[] = [];
+  let index = 0;
+
+  async function worker() {
+    while (index < tasks.length) {
+      const current = index++;
+      results[current] = await tasks[current]();
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
 /**
  * Processes all active channels. Called by cron or manual trigger.
+ * Channels are processed in parallel (up to CONCURRENCY_LIMIT).
  */
 export async function processAllChannels(): Promise<ProcessingResult[]> {
   console.log('[cron] Fetching auto-run channels...');
@@ -22,44 +47,43 @@ export async function processAllChannels(): Promise<ProcessingResult[]> {
     return [];
   }
 
-  const results: ProcessingResult[] = [];
-  for (const channel of channels) {
-    const channelResults = await processChannel(channel as Channel);
-    results.push(...channelResults);
-  }
-  return results;
+  const tasks = channels.map((channel) => () => processChannel(channel as Channel));
+  const channelResults = await runWithConcurrency(tasks, CONCURRENCY_LIMIT);
+  return channelResults.flat();
 }
 
 /**
  * Processes a single channel: fetches cards, extracts scripts, generates audio.
+ * Cards within a channel are processed in parallel (up to CONCURRENCY_LIMIT).
  */
 export async function processChannel(
   channel: Channel
 ): Promise<ProcessingResult[]> {
-  const results: ProcessingResult[] = [];
-
+  // Gather all cards from all lists
+  const allCards: TrelloCard[] = [];
   for (const listId of channel.trello_list_ids) {
-    let cards: TrelloCard[];
     try {
-      cards = await trelloService.getCardsInList(listId);
+      const cards = await trelloService.getCardsInList(listId);
+      allCards.push(...cards);
     } catch (err) {
       console.error(`[processing] Failed to fetch list ${listId}:`, err);
-      continue;
-    }
-
-    for (const card of cards) {
-      try {
-        const result = await processCard(card, channel);
-        results.push(result);
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[processing] Card ${card.id} error:`, errMsg);
-        results.push({ cardId: card.id, cardName: card.name, success: false, error: errMsg });
-      }
     }
   }
 
-  return results;
+  if (allCards.length === 0) return [];
+
+  // Process cards in parallel with concurrency limit
+  const tasks = allCards.map((card) => async () => {
+    try {
+      return await processCard(card, channel);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[processing] Card ${card.id} error:`, errMsg);
+      return { cardId: card.id, cardName: card.name, success: false, error: errMsg } as ProcessingResult;
+    }
+  });
+
+  return runWithConcurrency(tasks, CONCURRENCY_LIMIT);
 }
 
 /**
@@ -152,23 +176,107 @@ export async function retryCard(processedCardId: string): Promise<ProcessingResu
   const channel = record.channels as Channel;
   const trelloCardId = record.trello_card_id;
 
-  // Fetch fresh card data from Trello
-  const cards = await trelloService.getCardsInList(channel.trello_list_ids[0]);
-  const card = cards.find((c) => c.id === trelloCardId);
+  // Reset status to pending so processCard doesn't skip it
+  await supabase
+    .from('processed_cards')
+    .update({ status: 'pending', processing_stage: null, error_message: null, updated_at: new Date().toISOString() })
+    .eq('id', processedCardId);
 
-  if (!card) {
-    // Try fetching from all lists
-    for (const listId of channel.trello_list_ids) {
-      const listCards = await trelloService.getCardsInList(listId);
-      const found = listCards.find((c) => c.id === trelloCardId);
-      if (found) {
-        return processCard(found, channel);
-      }
-    }
-    throw new Error('Card no longer found in Trello');
+  // Fetch fresh card data directly by ID
+  const card = await trelloService.getCardById(trelloCardId);
+  return processCard(card, channel);
+}
+
+/**
+ * Manual trigger: re-runs the FULL pipeline for a card (download → extract → TTS → upload).
+ * Ignores current status — always reprocesses from scratch.
+ */
+export async function manualRunFull(processedCardId: string): Promise<ProcessingResult> {
+  const { data: record, error } = await supabase
+    .from('processed_cards')
+    .select('*, channels(*)')
+    .eq('id', processedCardId)
+    .single();
+
+  if (error || !record) throw new Error('Card record not found');
+
+  const channel = record.channels as Channel;
+  const trelloCardId = record.trello_card_id;
+
+  // Reset status so processCard doesn't skip it
+  await supabase
+    .from('processed_cards')
+    .update({ status: 'pending', processing_stage: null, error_message: null, updated_at: new Date().toISOString() })
+    .eq('id', processedCardId);
+
+  // Fetch fresh card data directly by ID
+  const card = await trelloService.getCardById(trelloCardId);
+  return processCard(card, channel);
+}
+
+/**
+ * Manual trigger: re-runs ONLY the voiceover generation (TTS → upload).
+ * Reuses the existing script attachment — skips download & extract if text can be reused.
+ */
+export async function manualRunVoiceover(processedCardId: string): Promise<ProcessingResult> {
+  const { data: record, error } = await supabase
+    .from('processed_cards')
+    .select('*, channels(*)')
+    .eq('id', processedCardId)
+    .single();
+
+  if (error || !record) throw new Error('Card record not found');
+
+  const channel = record.channels as Channel;
+  const trelloCardId = record.trello_card_id;
+
+  // Fetch fresh card data
+  const card = await trelloService.getCardById(trelloCardId);
+
+  // Find script attachment
+  const attachment = trelloService.getScriptAttachment(card.attachments || []);
+  if (!attachment) {
+    throw new Error('No script attachment found on this card');
   }
 
-  return processCard(card, channel);
+  // Mark as processing
+  await upsertCard(trelloCardId, card.name, channel.id, 'processing', null, null, 'downloading');
+
+  try {
+    // 1. Download script
+    console.log(`[manual-voiceover] Downloading attachment: ${attachment.name}`);
+    const fileBuffer = await trelloService.downloadAttachment(attachment.url);
+
+    // 2. Extract text
+    await updateStage(trelloCardId, 'extracting');
+    const text = await extractText(fileBuffer, attachment.name);
+
+    if (!text || text.trim().length === 0) {
+      throw new Error('Extracted text is empty');
+    }
+
+    // 3. Generate audio (skip script generation — go straight to TTS)
+    await updateStage(trelloCardId, 'queued');
+    console.log(`[manual-voiceover] Generating audio for ${text.length} chars`);
+    const finalAudio = await generateAudio(text, channel.voice_config, async (stage) => {
+      await updateStage(trelloCardId, stage === 'generating' ? 'generating' : 'queued');
+    });
+    console.log(`[manual-voiceover] Audio ready: ${(finalAudio.length / 1024 / 1024).toFixed(2)} MB`);
+
+    // 4. Upload to Trello
+    await updateStage(trelloCardId, 'uploading');
+    const sanitizedName = card.name.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
+    const fileName = `${sanitizedName}_voiceover.mp3`;
+    const uploaded = await trelloService.uploadAttachmentToCard(card.id, fileName, finalAudio);
+
+    // Done
+    await upsertCard(trelloCardId, card.name, channel.id, 'completed', null, uploaded.url, null);
+    return { cardId: card.id, cardName: card.name, success: true };
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    await upsertCard(trelloCardId, card.name, channel.id, 'failed', errMsg, null, null);
+    return { cardId: card.id, cardName: card.name, success: false, error: errMsg };
+  }
 }
 
 // ── Helpers ──
