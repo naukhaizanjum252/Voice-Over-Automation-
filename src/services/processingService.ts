@@ -5,6 +5,75 @@ import { extractText } from './fileParserService';
 import { generateAudio } from './voiceService';
 
 const CONCURRENCY_LIMIT = 5;
+const STALE_PROCESSING_MINUTES = 15; // Cards stuck in "processing" longer than this are auto-failed
+
+// ── Cancellation registry ──
+// Maps trello_card_id → AbortController for in-progress cards.
+// When a card is terminated, its controller is aborted, which cancels
+// all downstream fetch calls and polling loops.
+const activeControllers = new Map<string, AbortController>();
+
+/**
+ * Cancels a running card process.
+ * Called by the terminate API endpoint.
+ * Returns true if the card was actively being processed.
+ */
+export function cancelCardProcess(trelloCardId: string): boolean {
+  const controller = activeControllers.get(trelloCardId);
+  if (controller) {
+    console.log(`[processing] Cancelling active process for card ${trelloCardId}`);
+    controller.abort();
+    activeControllers.delete(trelloCardId);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Recovers cards stuck in "processing" state.
+ * If a card has been processing for longer than STALE_PROCESSING_MINUTES,
+ * it means the process that was handling it crashed/timed out.
+ * Resets them to "pending" so they get reprocessed in the current cron run.
+ */
+export async function recoverStaleJobs(): Promise<number> {
+  const cutoff = new Date(Date.now() - STALE_PROCESSING_MINUTES * 60 * 1000).toISOString();
+
+  const { data: staleCards, error: fetchError } = await supabase
+    .from('processed_cards')
+    .select('id, trello_card_id, card_name, updated_at')
+    .eq('status', 'processing')
+    .lt('updated_at', cutoff);
+
+  if (fetchError) {
+    console.error('[stale-recovery] Failed to query stale jobs:', fetchError.message);
+    return 0;
+  }
+
+  if (!staleCards || staleCards.length === 0) return 0;
+
+  console.log(`[stale-recovery] Found ${staleCards.length} stale processing jobs (>${STALE_PROCESSING_MINUTES}min old)`);
+
+  for (const card of staleCards) {
+    const staleMins = Math.round((Date.now() - new Date(card.updated_at).getTime()) / 60000);
+    console.log(`[stale-recovery] Resetting card "${card.card_name}" (stuck for ${staleMins}min) → pending for reprocessing`);
+
+    const { error: updateError } = await supabase
+      .from('processed_cards')
+      .update({
+        status: 'pending',
+        processing_stage: null,
+        error_message: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', card.id);
+
+    if (updateError) {
+      console.error(`[stale-recovery] Failed to reset card ${card.id}:`, updateError.message);
+    }
+  }
+
+  return staleCards.length;
+}
 
 /**
  * Runs async tasks with a concurrency limit.
@@ -33,6 +102,12 @@ async function runWithConcurrency<T>(
  * Channels are processed in parallel (up to CONCURRENCY_LIMIT).
  */
 export async function processAllChannels(): Promise<ProcessingResult[]> {
+  // Step 0: Recover any cards stuck in "processing" from crashed runs
+  const recovered = await recoverStaleJobs();
+  if (recovered > 0) {
+    console.log(`[cron] Recovered ${recovered} stale jobs before processing.`);
+  }
+
   console.log('[cron] Fetching auto-run channels...');
   const { data: channels, error } = await supabase
     .from('channels')
@@ -116,6 +191,10 @@ async function processCard(
     return { cardId: card.id, cardName: card.name, success: true }; // skip silently
   }
 
+  // Create an AbortController for this card so it can be cancelled
+  const abortController = new AbortController();
+  activeControllers.set(card.id, abortController);
+
   // Upsert as processing — stage: downloading
   await upsertCard(card.id, card.name, channel.id, 'processing', null, null, 'downloading');
 
@@ -123,6 +202,8 @@ async function processCard(
     // 1. Download attachment
     console.log(`[processing] Downloading attachment: ${attachment.name}`);
     const fileBuffer = await trelloService.downloadAttachment(attachment.url);
+
+    checkAborted(abortController.signal);
 
     // Stage: extracting
     await updateStage(card.id, 'extracting');
@@ -132,13 +213,17 @@ async function processCard(
       throw new Error('Extracted text is empty');
     }
 
+    checkAborted(abortController.signal);
+
     // Stage: queued (will move to 'generating' once 69 Labs starts processing)
     await updateStage(card.id, 'queued');
     console.log(`[processing] Generating audio for ${text.length} chars`);
     const finalAudio = await generateAudio(text, channel.voice_config, async (stage) => {
       await updateStage(card.id, stage === 'generating' ? 'generating' : 'queued');
-    });
+    }, abortController.signal);
     console.log(`[processing] Audio ready: ${(finalAudio.length / 1024 / 1024).toFixed(2)} MB`);
+
+    checkAborted(abortController.signal);
 
     // Stage: uploading
     await updateStage(card.id, 'uploading');
@@ -150,14 +235,31 @@ async function processCard(
       finalAudio
     );
 
+    // Check abort one final time before marking completed —
+    // if terminate was called during upload, don't overwrite "failed" with "completed"
+    checkAborted(abortController.signal);
+
     // Done
     await upsertCard(card.id, card.name, channel.id, 'completed', null, uploaded.url, null);
 
     return { cardId: card.id, cardName: card.name, success: true };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    await upsertCard(card.id, card.name, channel.id, 'failed', errMsg, null, null);
-    return { cardId: card.id, cardName: card.name, success: false, error: errMsg };
+    const isAborted = abortController.signal.aborted;
+    // Don't overwrite the "failed/Terminated" status if it was a cancellation
+    if (!isAborted) {
+      await upsertCard(card.id, card.name, channel.id, 'failed', errMsg, null, null);
+    }
+    return { cardId: card.id, cardName: card.name, success: false, error: isAborted ? 'Terminated by user' : errMsg };
+  } finally {
+    activeControllers.delete(card.id);
+  }
+}
+
+/** Throws if the signal has been aborted. */
+function checkAborted(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw new Error('Terminated by user');
   }
 }
 
@@ -239,6 +341,10 @@ export async function manualRunVoiceover(processedCardId: string): Promise<Proce
     throw new Error('No script attachment found on this card');
   }
 
+  // Create an AbortController for this card so it can be cancelled
+  const abortController = new AbortController();
+  activeControllers.set(trelloCardId, abortController);
+
   // Mark as processing
   await upsertCard(trelloCardId, card.name, channel.id, 'processing', null, null, 'downloading');
 
@@ -246,6 +352,8 @@ export async function manualRunVoiceover(processedCardId: string): Promise<Proce
     // 1. Download script
     console.log(`[manual-voiceover] Downloading attachment: ${attachment.name}`);
     const fileBuffer = await trelloService.downloadAttachment(attachment.url);
+
+    checkAborted(abortController.signal);
 
     // 2. Extract text
     await updateStage(trelloCardId, 'extracting');
@@ -255,13 +363,17 @@ export async function manualRunVoiceover(processedCardId: string): Promise<Proce
       throw new Error('Extracted text is empty');
     }
 
+    checkAborted(abortController.signal);
+
     // 3. Generate audio (skip script generation — go straight to TTS)
     await updateStage(trelloCardId, 'queued');
     console.log(`[manual-voiceover] Generating audio for ${text.length} chars`);
     const finalAudio = await generateAudio(text, channel.voice_config, async (stage) => {
       await updateStage(trelloCardId, stage === 'generating' ? 'generating' : 'queued');
-    });
+    }, abortController.signal);
     console.log(`[manual-voiceover] Audio ready: ${(finalAudio.length / 1024 / 1024).toFixed(2)} MB`);
+
+    checkAborted(abortController.signal);
 
     // 4. Upload to Trello
     await updateStage(trelloCardId, 'uploading');
@@ -269,13 +381,21 @@ export async function manualRunVoiceover(processedCardId: string): Promise<Proce
     const fileName = `${sanitizedName}_voiceover.mp3`;
     const uploaded = await trelloService.uploadAttachmentToCard(card.id, fileName, finalAudio);
 
+    // Check abort one final time before marking completed
+    checkAborted(abortController.signal);
+
     // Done
     await upsertCard(trelloCardId, card.name, channel.id, 'completed', null, uploaded.url, null);
     return { cardId: card.id, cardName: card.name, success: true };
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    await upsertCard(trelloCardId, card.name, channel.id, 'failed', errMsg, null, null);
-    return { cardId: card.id, cardName: card.name, success: false, error: errMsg };
+    const isAborted = abortController.signal.aborted;
+    if (!isAborted) {
+      await upsertCard(trelloCardId, card.name, channel.id, 'failed', errMsg, null, null);
+    }
+    return { cardId: card.id, cardName: card.name, success: false, error: isAborted ? 'Terminated by user' : errMsg };
+  } finally {
+    activeControllers.delete(trelloCardId);
   }
 }
 
