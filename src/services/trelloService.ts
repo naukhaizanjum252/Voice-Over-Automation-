@@ -50,6 +50,12 @@ export async function getLists(boardId: string): Promise<TrelloList[]> {
   );
 }
 
+export async function getCardById(cardId: string): Promise<TrelloCard> {
+  return trelloFetch<TrelloCard>(
+    `/cards/${encodeURIComponent(cardId)}?fields=name,desc,idList&attachments=true`
+  );
+}
+
 export async function getCardsInList(listId: string): Promise<TrelloCard[]> {
   return trelloFetch<TrelloCard[]>(
     `/lists/${encodeURIComponent(listId)}/cards?fields=name,desc,idList&attachments=true`

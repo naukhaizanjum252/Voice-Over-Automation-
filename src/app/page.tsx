@@ -3,14 +3,16 @@
 import { useState, useEffect, useCallback } from 'react';
 import ChannelForm from '@/components/ChannelForm';
 import ChannelList from '@/components/ChannelList';
-import StatsOverview from '@/components/StatsOverview';
-import type { ChannelStats } from '@/types';
+import StatsOverview, { type StatsFilter } from '@/components/StatsOverview';
+import type { ChannelStats, Channel } from '@/types';
 
 export default function Dashboard() {
   const [stats, setStats] = useState<ChannelStats[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
   const [runningAll, setRunningAll] = useState(false);
+  const [statsFilter, setStatsFilter] = useState<StatsFilter>(null);
 
   const fetchChannels = useCallback(async () => {
     try {
@@ -69,6 +71,56 @@ export default function Dashboard() {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Export backup */}
+            <a
+              href="/api/backup/export"
+              download
+              className="p-2 rounded-lg t"
+              style={{ color: 'var(--text-muted)' }}
+              title="Export CSV backup"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            </a>
+            {/* Import backup */}
+            <label
+              className="p-2 rounded-lg t cursor-pointer"
+              style={{ color: 'var(--text-muted)' }}
+              title="Import CSV backup"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="17 8 12 3 7 8" />
+                <line x1="12" y1="3" x2="12" y2="15" />
+              </svg>
+              <input
+                type="file"
+                accept=".csv"
+                className="hidden"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const text = await file.text();
+                  try {
+                    const res = await fetch('/api/backup/import', {
+                      method: 'POST',
+                      body: text,
+                    });
+                    const data = await res.json();
+                    if (res.ok) {
+                      alert(`Import complete: ${data.channelsImported}/${data.channelsTotal} channels, ${data.cardsImported}/${data.cardsTotal} cards`);
+                      fetchChannels();
+                    } else {
+                      alert(`Import failed: ${data.error}`);
+                    }
+                  } catch { alert('Import failed'); }
+                  e.target.value = '';
+                }}
+              />
+            </label>
             <button
               onClick={fetchChannels}
               className="p-2 rounded-lg t"
@@ -147,14 +199,17 @@ export default function Dashboard() {
           failed={totalFailed}
           processing={totalProcessing}
           loading={loading}
+          activeFilter={statsFilter}
+          onFilter={setStatsFilter}
         />
 
         {/* Form */}
-        {showForm && (
+        {(showForm || editingChannel) && (
           <div className="mt-7 fade-up">
             <ChannelForm
-              onCreated={() => { fetchChannels(); setShowForm(false); }}
-              onCancel={() => setShowForm(false)}
+              editChannel={editingChannel}
+              onCreated={() => { fetchChannels(); setShowForm(false); setEditingChannel(null); }}
+              onCancel={() => { setShowForm(false); setEditingChannel(null); }}
             />
           </div>
         )}
@@ -200,7 +255,26 @@ export default function Dashboard() {
               </button>
             </div>
           ) : (
-            <ChannelList stats={stats} onRefresh={fetchChannels} />
+            <ChannelList
+              stats={
+                statsFilter
+                  ? stats.filter((s) =>
+                      statsFilter === 'completed' ? s.completed > 0
+                      : statsFilter === 'failed' ? s.failed > 0
+                      : statsFilter === 'processing' ? s.processing > 0
+                      : true
+                    )
+                  : stats
+              }
+              onRefresh={fetchChannels}
+              onEdit={(channelId) => {
+                const found = stats.find((s) => s.channel.id === channelId);
+                if (found) {
+                  setEditingChannel(found.channel);
+                  setShowForm(false);
+                }
+              }}
+            />
           )}
         </div>
       </main>

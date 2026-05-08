@@ -6,6 +6,7 @@ import type { ChannelStats, ProcessedCard, ProcessingStage } from '@/types';
 interface Props {
   stats: ChannelStats;
   onRefresh: () => void;
+  onEdit?: (channelId: string) => void;
 }
 
 const STAGES: { key: ProcessingStage; label: string }[] = [
@@ -17,7 +18,7 @@ const STAGES: { key: ProcessingStage; label: string }[] = [
   { key: 'uploading', label: 'Uploading' },
 ];
 
-export default function ChannelCard({ stats, onRefresh }: Props) {
+export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
   const { channel, total, completed, failed, processing, lastRun, cards } = stats;
   const [expanded, setExpanded] = useState(false);
   const [running, setRunning] = useState(false);
@@ -160,6 +161,14 @@ export default function ChannelCard({ stats, onRefresh }: Props) {
               </button>
             )}
             <button
+              onClick={() => onEdit?.(channel.id)}
+              className="h-9 w-9 rounded-xl t flex items-center justify-center"
+              style={{ color: 'var(--text-muted)' }}
+              title="Edit channel"
+            >
+              <EditIcon size={14} />
+            </button>
+            <button
               onClick={() => setConfirmDelete(true)}
               className="h-9 w-9 rounded-xl t flex items-center justify-center"
               style={{ color: 'var(--text-muted)' }}
@@ -210,7 +219,7 @@ export default function ChannelCard({ stats, onRefresh }: Props) {
         {processingCards.length > 0 && (
           <div className="mt-4 space-y-3">
             {processingCards.map((card) => (
-              <StageStepper key={card.id} card={card} />
+              <StageStepper key={card.id} card={card} onRefresh={onRefresh} />
             ))}
           </div>
         )}
@@ -286,15 +295,41 @@ export default function ChannelCard({ stats, onRefresh }: Props) {
 
 /* ── Sub-components ── */
 
-function StageStepper({ card }: { card: ProcessedCard }) {
+function StageStepper({ card, onRefresh }: { card: ProcessedCard; onRefresh: () => void }) {
+  const [terminating, setTerminating] = useState(false);
   const currentStage = card.processing_stage;
   const currentIdx = currentStage ? STAGES.findIndex((s) => s.key === currentStage) : -1;
 
+  const handleTerminate = async () => {
+    setTerminating(true);
+    try {
+      await fetch('/api/card/terminate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cardId: card.id }),
+      });
+      onRefresh();
+    } catch (err) { console.error(err); }
+    finally { setTerminating(false); }
+  };
+
   return (
     <div className="rounded-xl p-3.5" style={{ background: 'var(--warning-muted)', border: '1px solid var(--warning)' }}>
-      <p className="text-[12px] font-semibold truncate mb-2.5" style={{ color: 'var(--text)' }}>
-        {card.card_name || card.trello_card_id}
-      </p>
+      <div className="flex items-center justify-between mb-2.5">
+        <p className="text-[12px] font-semibold truncate" style={{ color: 'var(--text)' }}>
+          {card.card_name || card.trello_card_id}
+        </p>
+        <button
+          onClick={handleTerminate}
+          disabled={terminating}
+          className="h-6 px-2 rounded-md text-[10px] font-bold shrink-0 t flex items-center gap-1 disabled:opacity-40"
+          style={{ background: 'var(--danger-muted)', color: 'var(--danger)', border: '1px solid var(--danger)' }}
+          title="Terminate this process"
+        >
+          {terminating ? <Spinner /> : <StopIcon size={9} />}
+          Stop
+        </button>
+      </div>
       <div className="flex items-center gap-1">
         {STAGES.map((stage, idx) => {
           const isDone = idx < currentIdx;
@@ -359,6 +394,7 @@ function StageStepper({ card }: { card: ProcessedCard }) {
 
 function CardRow({ card, onRefresh, last }: { card: ProcessedCard; onRefresh: () => void; last: boolean }) {
   const [retrying, setRetrying] = useState(false);
+  const [manualAction, setManualAction] = useState<'full' | 'voiceover' | null>(null);
 
   const retry = async () => {
     setRetrying(true);
@@ -371,6 +407,19 @@ function CardRow({ card, onRefresh, last }: { card: ProcessedCard; onRefresh: ()
       onRefresh();
     } catch (err) { console.error(err); }
     finally { setRetrying(false); }
+  };
+
+  const manualRun = async (action: 'full' | 'voiceover') => {
+    setManualAction(action);
+    try {
+      await fetch('/api/card/manual-run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cardId: card.id, action }),
+      });
+      onRefresh();
+    } catch (err) { console.error(err); }
+    finally { setManualAction(null); }
   };
 
   const statusColor = card.status === 'completed' ? 'var(--success)'
@@ -450,6 +499,31 @@ function CardRow({ card, onRefresh, last }: { card: ProcessedCard; onRefresh: ()
               <DownloadIcon size={10} />
               Audio
             </a>
+          )}
+          {/* Manual triggers — available for all non-processing cards */}
+          {card.status !== 'processing' && (
+            <>
+              <button
+                onClick={() => manualRun('voiceover')}
+                disabled={manualAction !== null}
+                className="h-7 px-2.5 rounded-lg text-[10px] font-bold shrink-0 t flex items-center gap-1 disabled:opacity-40 border"
+                style={{ borderColor: 'var(--accent)', color: 'var(--accent)', background: manualAction === 'voiceover' ? 'var(--accent-muted)' : 'transparent' }}
+                title="Re-generate voiceover only"
+              >
+                {manualAction === 'voiceover' ? <Spinner /> : <VoiceIcon size={10} />}
+                Voice
+              </button>
+              <button
+                onClick={() => manualRun('full')}
+                disabled={manualAction !== null}
+                className="h-7 px-2.5 rounded-lg text-[10px] font-bold shrink-0 t flex items-center gap-1 disabled:opacity-40 border"
+                style={{ borderColor: 'var(--text-muted)', color: 'var(--text-muted)', background: manualAction === 'full' ? 'var(--surface-2)' : 'transparent' }}
+                title="Re-run full pipeline (download, extract, generate, upload)"
+              >
+                {manualAction === 'full' ? <Spinner /> : <RefreshIcon size={10} />}
+                Full
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -540,6 +614,15 @@ function CheckCircleIcon() {
   );
 }
 
+function EditIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+    </svg>
+  );
+}
+
 function TrashIcon({ size = 12 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -560,6 +643,23 @@ function DownloadIcon({ size = 12 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+  );
+}
+
+function StopIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" stroke="none">
+      <rect x="4" y="4" width="16" height="16" rx="2" />
+    </svg>
+  );
+}
+
+function VoiceIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" /><path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
     </svg>
   );
 }
