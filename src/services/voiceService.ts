@@ -42,11 +42,15 @@ function apiHeaders(): Record<string, string> {
 export async function generateAudio(
   text: string,
   config: VoiceConfig,
-  onStageChange?: (stage: 'queued' | 'generating') => void
+  onStageChange?: (stage: 'queued' | 'generating') => void,
+  cancelSignal?: AbortSignal
 ): Promise<Buffer> {
   try {
-    return await generateAudioWith69Labs(text, config, onStageChange);
+    return await generateAudioWith69Labs(text, config, onStageChange, cancelSignal);
   } catch (primaryError) {
+    // If cancelled, don't fall back — propagate immediately
+    if (cancelSignal?.aborted) throw primaryError;
+
     const errMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
     console.error(`[voiceService] 69 Labs failed: ${errMsg}`);
 
@@ -74,13 +78,13 @@ export async function generateAudio(
     }
 
     try {
-      const audio = await ai84Service.generateAudio(text, config, onStageChange, sourceName, sourceGender);
+      const audio = await ai84Service.generateAudio(text, config, onStageChange, sourceName, sourceGender, cancelSignal);
       console.log('[voiceService] AI84 fallback succeeded.');
       return audio;
     } catch (fallbackError) {
+      if (cancelSignal?.aborted) throw fallbackError;
       const fallbackMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
       console.error(`[voiceService] AI84 fallback also failed: ${fallbackMsg}`);
-      // Throw a combined error so the user sees both failures
       throw new Error(
         `TTS failed on both providers. 69 Labs: ${errMsg} | AI84: ${fallbackMsg}`
       );
@@ -97,7 +101,8 @@ export async function generateAudio(
 async function generateAudioWith69Labs(
   text: string,
   config: VoiceConfig,
-  onStageChange?: (stage: 'queued' | 'generating') => void
+  onStageChange?: (stage: 'queued' | 'generating') => void,
+  cancelSignal?: AbortSignal
 ): Promise<Buffer> {
   let lastError: Error | null = null;
 
@@ -154,7 +159,7 @@ async function generateAudioWith69Labs(
       console.log(`[voiceService] TTS job started: ${jobId}`);
 
       // Step 2: Poll → Step 3: Download
-      return await pollAndDownload(jobId, onStageChange);
+      return await pollAndDownload(jobId, onStageChange, cancelSignal);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
       console.error(
@@ -182,13 +187,19 @@ async function generateAudioWith69Labs(
  */
 async function pollAndDownload(
   jobId: string,
-  onStageChange?: (stage: 'queued' | 'generating') => void
+  onStageChange?: (stage: 'queued' | 'generating') => void,
+  cancelSignal?: AbortSignal
 ): Promise<Buffer> {
   let lastState = '';
   let notifiedGenerating = false;
 
   for (let i = 0; i < TTS_POLL_MAX_ATTEMPTS; i++) {
     await sleep(TTS_POLL_INTERVAL_MS);
+
+    // Check for cancellation after sleep (catches abort during wait)
+    if (cancelSignal?.aborted) {
+      throw new Error('Terminated by user');
+    }
 
     let statusRes: Response;
     try {
@@ -197,6 +208,7 @@ async function pollAndDownload(
         signal: AbortSignal.timeout(10000),
       });
     } catch (fetchErr) {
+      if (cancelSignal?.aborted) throw new Error('Terminated by user');
       console.error(`[voiceService] Poll fetch error (attempt ${i + 1}):`, fetchErr);
       continue; // network glitch, keep polling
     }
