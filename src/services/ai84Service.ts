@@ -246,7 +246,8 @@ export async function generateAudio(
   config: VoiceConfig,
   onStageChange?: (stage: 'queued' | 'generating') => void,
   sourceVoiceName?: string,
-  sourceGender?: string
+  sourceGender?: string,
+  cancelSignal?: AbortSignal
 ): Promise<Buffer> {
   // Resolve the matching AI84 voice ID
   const canonicalVoiceId = await findMatchingVoice(
@@ -293,7 +294,7 @@ export async function generateAudio(
   onStageChange?.('queued');
 
   // Step 2: Poll for completion
-  return await pollAndDownload(jobId, onStageChange);
+  return await pollAndDownload(jobId, onStageChange, cancelSignal);
 }
 
 /**
@@ -301,13 +302,19 @@ export async function generateAudio(
  */
 async function pollAndDownload(
   jobId: string,
-  onStageChange?: (stage: 'queued' | 'generating') => void
+  onStageChange?: (stage: 'queued' | 'generating') => void,
+  cancelSignal?: AbortSignal
 ): Promise<Buffer> {
   let lastStatus = '';
   let notifiedGenerating = false;
 
   for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
     await sleep(POLL_INTERVAL_MS);
+
+    // Check for cancellation after sleep (catches abort during wait)
+    if (cancelSignal?.aborted) {
+      throw new Error('Terminated by user');
+    }
 
     let statusRes: Response;
     try {
@@ -319,6 +326,7 @@ async function pollAndDownload(
         }
       );
     } catch (fetchErr) {
+      if (cancelSignal?.aborted) throw new Error('Terminated by user');
       console.error(`[ai84] Poll fetch error (attempt ${i + 1}):`, fetchErr);
       continue; // network glitch, keep polling
     }
