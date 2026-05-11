@@ -105,8 +105,8 @@ export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
             <div className="flex items-center gap-3.5 mt-2 flex-wrap">
               <InfoChip icon={<BoardIcon />} text={stats.boardName} />
               <InfoChip icon={<ListIcon />} text={stats.listNames.join(', ')} />
-              {stats.titleListMappings.length > 0 && (
-                <InfoChip icon={<PenIcon />} text={`Titles: ${stats.titleListMappings.map((m) => m.titleListName).join(', ')}`} />
+              {stats.titleListMappings?.length > 0 && (
+                <InfoChip icon={<PenIcon />} text={`Titles: ${stats.titleListMappings?.map((m) => m.titleListName).join(', ')}`} />
               )}
               <InfoChip icon={<ClockIcon />} text={ago(lastRun)} />
               {total > 0 && <InfoChip icon={<CheckCircleIcon />} text={`${successRate}% success`} />}
@@ -564,13 +564,13 @@ function InfoChip({ icon, text }: { icon: React.ReactNode; text: string }) {
 }
 
 function ConfigPreview({ channel, titleListMappings, listNames, boardName }: { channel: Channel; titleListMappings: TitleListMappingResolved[]; listNames: string[]; boardName: string }) {
-  const hasScript = titleListMappings.length > 0;
+  const hasScript = titleListMappings?.length > 0;
   const hasVoice = !!channel.voice_config?.voiceId;
 
   type CField = { label: string; value: string; pill?: boolean; mono?: boolean };
 
   const scriptFields: CField[] = [];
-  for (const m of titleListMappings) {
+  for (const m of (titleListMappings||[])) {
     scriptFields.push({ label: 'Source → Target', value: `${m.titleListName} → ${m.voiceoverListName}`, pill: true });
   }
   if (channel.niche) scriptFields.push({ label: 'Niche', value: channel.niche });
