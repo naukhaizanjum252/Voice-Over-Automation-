@@ -68,7 +68,16 @@ export interface ProcessedCard {
 }
 
 export type CardStatus = 'pending' | 'processing' | 'completed' | 'failed';
-export type ProcessingStage = 'script_generating' | 'downloading' | 'extracting' | 'generating' | 'queued' | 'uploading';
+export type ProcessingStage =
+  // Script flow: title → script → upload script → voice → upload voice
+  | 'script_generating'    // Generating script via Claude
+  | 'script_uploading'     // Uploading script .docx to Trello
+  // Voiceover-only flow: detect script → voice → upload voice
+  | 'downloading'          // Downloading script from Trello
+  | 'extracting'           // Extracting text from script file
+  // Shared stages (both flows)
+  | 'generating'           // Generating voiceover audio
+  | 'uploading';           // Uploading voiceover to Trello
 
 // ── Trello Types ──
 

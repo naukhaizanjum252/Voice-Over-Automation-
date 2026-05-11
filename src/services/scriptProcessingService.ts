@@ -2,11 +2,13 @@ import { supabase } from '@/lib/supabase';
 import type { Channel, StoredFile, PrimaryDocument, ProcessingResult, TitleListMapping } from '@/types';
 import * as trelloService from './trelloService';
 import { generateScript, type ScriptGenConfig } from './scriptService';
+import { generateAudio } from './voiceService';
 import { extractText } from './fileParserService';
 import { Document, Packer, Paragraph, TextRun } from 'docx';
 
 const FEEDER_SCRIPTS_BUCKET = 'feeder-scripts';
 const PRIMARY_DOCS_BUCKET = 'primary-documents';
+const CONCURRENCY_LIMIT = 5;
 
 /**
  * Script Generation Pipeline
@@ -90,7 +92,9 @@ export async function processChannelScripts(
     console.log(`[script] Loaded ${feederTexts.length} feeder scripts for channel "${channel.name}"`);
   }
 
-  // Process each title list → voiceover list mapping
+  // Collect all eligible cards across all mappings first
+  const eligibleCards: { cardId: string; cardName: string; targetListId: string }[] = [];
+
   for (const mapping of channel.title_list_mappings) {
     let cards;
     try {
@@ -125,16 +129,27 @@ export async function processChannelScripts(
         continue;
       }
 
-      try {
-        const result = await processScriptCard(card.id, card.name, channel, primaryDocTexts, feederTexts, mapping.voiceoverListId, model);
-        results.push(result);
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        console.error(`[script] Card ${card.id} error:`, errMsg);
-        results.push({ cardId: card.id, cardName: card.name, success: false, error: errMsg });
-      }
+      eligibleCards.push({ cardId: card.id, cardName: card.name, targetListId: mapping.voiceoverListId });
     }
   }
+
+  if (eligibleCards.length === 0) return results;
+
+  console.log(`[script] Processing ${eligibleCards.length} cards in parallel (concurrency: ${CONCURRENCY_LIMIT}) for channel "${channel.name}"`);
+
+  // Process eligible cards in parallel with concurrency limit
+  const tasks = eligibleCards.map((card) => async () => {
+    try {
+      return await processScriptCard(card.cardId, card.cardName, channel, primaryDocTexts, feederTexts, card.targetListId, model);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[script] Card ${card.cardId} error:`, errMsg);
+      return { cardId: card.cardId, cardName: card.cardName, success: false, error: errMsg } as ProcessingResult;
+    }
+  });
+
+  const parallelResults = await runWithConcurrency(tasks, CONCURRENCY_LIMIT);
+  results.push(...parallelResults);
 
   return results;
 }
@@ -156,10 +171,10 @@ async function processScriptCard(
   targetListId?: string,
   model?: string
 ): Promise<ProcessingResult> {
+  // Stage 1: Generate script
   await upsertCard(cardId, cardName, channel.id, 'processing', null, null, 'script_generating');
 
   try {
-    // Build the full config from all 3 layers
     const config: ScriptGenConfig = {
       primaryDocTexts,
       feederScriptTexts: feederTexts,
@@ -171,33 +186,51 @@ async function processScriptCard(
       note: channel.note,
     };
 
-    // 1. Generate script text
     console.log(`[script] Generating script for "${cardName}"...`);
     const scriptText = await generateScript(config, cardName, model);
     console.log(`[script] Script generated: ${scriptText.length} chars`);
 
-    // 2. Build .docx
+    // Stage 2: Upload script to Trello
+    await updateStage(cardId, 'script_uploading');
     const docxBuffer = await buildDocx(cardName, scriptText);
-
-    // 3. Upload .docx to the card
     const sanitizedName = cardName.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
-    const fileName = `${sanitizedName}_script.docx`;
-    const uploaded = await trelloService.uploadAttachmentToCard(
+    const scriptFileName = `${sanitizedName}_script.docx`;
+    const scriptUploaded = await trelloService.uploadAttachmentToCard(
       cardId,
-      fileName,
+      scriptFileName,
       docxBuffer,
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     );
-    console.log(`[script] Script uploaded to card "${cardName}": ${fileName}`);
+    console.log(`[script] Script uploaded to card "${cardName}": ${scriptFileName}`);
 
-    // 4. Move card to target voiceover list
+    // Move card to target voiceover list
     if (targetListId) {
       await trelloService.moveCardToList(cardId, targetListId);
       console.log(`[script] Card "${cardName}" moved to voiceover list ${targetListId}`);
     }
 
-    // 5. Mark as pending — script is done, voiceover phase picks this up next
-    await upsertCard(cardId, cardName, channel.id, 'pending', null, null, null, uploaded.url);
+    // Save script URL
+    await upsertCard(cardId, cardName, channel.id, 'processing', null, null, 'generating', scriptUploaded.url);
+
+    // Stage 3: Generate voiceover from the script text we already have
+    console.log(`[script] Generating voiceover for "${cardName}" (${scriptText.length} chars)...`);
+    const audioBuffer = await generateAudio(scriptText, channel.voice_config, async (stage) => {
+      await updateStage(cardId, stage === 'generating' ? 'generating' : 'generating');
+    });
+    console.log(`[script] Voiceover ready: ${(audioBuffer.length / 1024 / 1024).toFixed(2)} MB`);
+
+    // Stage 4: Upload voiceover to Trello
+    await updateStage(cardId, 'uploading');
+    const voiceFileName = `${sanitizedName}_voiceover.mp3`;
+    const voiceUploaded = await trelloService.uploadAttachmentToCard(
+      cardId,
+      voiceFileName,
+      audioBuffer
+    );
+    console.log(`[script] Voiceover uploaded to card "${cardName}": ${voiceFileName}`);
+
+    // Done
+    await upsertCard(cardId, cardName, channel.id, 'completed', null, voiceUploaded.url, null, scriptUploaded.url);
 
     return { cardId, cardName, success: true };
   } catch (err) {
@@ -329,6 +362,27 @@ async function buildDocx(_title: string, scriptText: string): Promise<Buffer> {
   return Buffer.from(uint8);
 }
 
+// ── Concurrency ──
+
+async function runWithConcurrency<T>(
+  tasks: (() => Promise<T>)[],
+  limit: number
+): Promise<T[]> {
+  const results: T[] = [];
+  let index = 0;
+
+  async function worker() {
+    while (index < tasks.length) {
+      const current = index++;
+      results[current] = await tasks[current]();
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
+}
+
 // ── Helpers ──
 
 async function upsertCard(
@@ -361,5 +415,16 @@ async function upsertCard(
 
   if (error) {
     console.error(`[script] Failed to upsert card ${trelloCardId}:`, error.message);
+  }
+}
+
+async function updateStage(trelloCardId: string, stage: string) {
+  const { error } = await supabase
+    .from('processed_cards')
+    .update({ processing_stage: stage, updated_at: new Date().toISOString() })
+    .eq('trello_card_id', trelloCardId);
+
+  if (error) {
+    console.error(`[script] Failed to update stage for ${trelloCardId}:`, error.message);
   }
 }

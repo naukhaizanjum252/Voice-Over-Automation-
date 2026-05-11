@@ -55,7 +55,7 @@ export async function GET() {
 
       const completed = channelCards.filter((c: ProcessedCard) => c.status === 'completed').length;
       const failed = channelCards.filter((c: ProcessedCard) => c.status === 'failed').length;
-      const processing = channelCards.filter((c: ProcessedCard) => c.status === 'processing' || c.status === 'pending').length;
+      const processing = channelCards.filter((c: ProcessedCard) => c.status === 'processing').length;
       const lastRun = channelCards.length > 0 ? channelCards[0].updated_at : null;
 
       return {

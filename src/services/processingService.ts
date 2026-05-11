@@ -55,13 +55,13 @@ export async function recoverStaleJobs(): Promise<number> {
 
   for (const card of staleCards) {
     const staleMins = Math.round((Date.now() - new Date(card.updated_at).getTime()) / 60000);
-    console.log(`[stale-recovery] Resetting card "${card.card_name}" (stuck for ${staleMins}min) → queued for reprocessing`);
+    console.log(`[stale-recovery] Resetting card "${card.card_name}" (stuck for ${staleMins}min) → pending for reprocessing`);
 
     const { error: updateError } = await supabase
       .from('processed_cards')
       .update({
-        status: 'processing',
-        processing_stage: 'queued',
+        status: 'pending',
+        processing_stage: null,
         error_message: null,
         updated_at: new Date().toISOString(),
       })
@@ -188,7 +188,13 @@ async function processCard(
   // Find script attachment
   const attachment = trelloService.getScriptAttachment(card.attachments || []);
   if (!attachment) {
-    return { cardId: card.id, cardName: card.name, success: true }; // skip silently
+    console.log(`[processing] Card "${card.name}" has no script attachment, skipping`);
+    // If card was pending (script phase said it was done), mark as failed — something went wrong
+    if (existing && existing.status === 'pending') {
+      await upsertCard(card.id, card.name, channel.id, 'failed', 'No script attachment found on card', null, null);
+      return { cardId: card.id, cardName: card.name, success: false, error: 'No script attachment found' };
+    }
+    return { cardId: card.id, cardName: card.name, success: true }; // skip silently for new cards
   }
 
   // Create an AbortController for this card so it can be cancelled
@@ -215,11 +221,11 @@ async function processCard(
 
     checkAborted(abortController.signal);
 
-    // Stage: queued (will move to 'generating' once 69 Labs starts processing)
-    await updateStage(card.id, 'queued');
+    // Stage: generating voice
+    await updateStage(card.id, 'generating');
     console.log(`[processing] Generating audio for ${text.length} chars`);
     const finalAudio = await generateAudio(text, channel.voice_config, async (stage) => {
-      await updateStage(card.id, stage === 'generating' ? 'generating' : 'queued');
+      await updateStage(card.id, stage === 'generating' ? 'generating' : 'generating');
     }, abortController.signal);
     console.log(`[processing] Audio ready: ${(finalAudio.length / 1024 / 1024).toFixed(2)} MB`);
 
@@ -366,10 +372,10 @@ export async function manualRunVoiceover(processedCardId: string): Promise<Proce
     checkAborted(abortController.signal);
 
     // 3. Generate audio (skip script generation — go straight to TTS)
-    await updateStage(trelloCardId, 'queued');
+    await updateStage(trelloCardId, 'generating');
     console.log(`[manual-voiceover] Generating audio for ${text.length} chars`);
     const finalAudio = await generateAudio(text, channel.voice_config, async (stage) => {
-      await updateStage(trelloCardId, stage === 'generating' ? 'generating' : 'queued');
+      await updateStage(trelloCardId, stage === 'generating' ? 'generating' : 'generating');
     }, abortController.signal);
     console.log(`[manual-voiceover] Audio ready: ${(finalAudio.length / 1024 / 1024).toFixed(2)} MB`);
 

@@ -10,13 +10,38 @@ interface Props {
   onEdit?: (channelId: string) => void;
 }
 
-const STAGES: { key: ProcessingStage; label: string }[] = [
-  { key: 'script_generating', label: 'Reading Title' },
-  { key: 'downloading', label: 'Generating Script' },
-  { key: 'extracting', label: 'Queued for Voice' },
-  { key: 'queued', label: 'Generating Voice' },
-  { key: 'generating', label: 'Uploading' },
+// Script flow: title → generate script → upload script → generate voice → upload voice
+const SCRIPT_STAGES: { key: ProcessingStage; label: string }[] = [
+  { key: 'script_generating', label: 'Generating Script' },
+  { key: 'script_uploading', label: 'Uploading Script' },
+  { key: 'generating', label: 'Generating Voice' },
+  { key: 'uploading', label: 'Uploading Voice' },
 ];
+
+// Voiceover-only flow: detect script → extract → generate voice → upload voice
+const VOICE_STAGES: { key: ProcessingStage; label: string }[] = [
+  { key: 'downloading', label: 'Fetching Script' },
+  { key: 'extracting', label: 'Reading Script' },
+  { key: 'generating', label: 'Generating Voice' },
+  { key: 'uploading', label: 'Uploading Voice' },
+];
+
+function getStagesForCard(card: ProcessedCard) {
+  const stage = card.processing_stage;
+  // If the card went through script generation, use script stages
+  if (stage === 'script_generating' || stage === 'script_uploading') {
+    return SCRIPT_STAGES;
+  }
+  // If the card went through voiceover-only flow
+  if (stage === 'downloading' || stage === 'extracting') {
+    return VOICE_STAGES;
+  }
+  // For shared stages (generating, uploading), check if card has a script_url — means it came from script flow
+  if (card.script_url) {
+    return SCRIPT_STAGES;
+  }
+  return VOICE_STAGES;
+}
 
 export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
   const { channel, total, completed, failed, processing, lastRun, cards } = stats;
@@ -28,7 +53,7 @@ export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
 
   const successRate = total > 0 ? Math.round((completed / total) * 100) : 0;
   const failedCards = cards.filter((c) => c.status === 'failed');
-  const processingCards = cards.filter((c) => c.status === 'processing' || c.status === 'pending');
+  const processingCards = cards.filter((c) => c.status === 'processing');
 
   const handleRun = async () => {
     setRunning(true);
@@ -289,12 +314,9 @@ export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
 
 function StageStepper({ card, onRefresh }: { card: ProcessedCard; onRefresh: () => void }) {
   const [terminating, setTerminating] = useState(false);
-  const isPending = card.status === 'pending';
+  const stages = getStagesForCard(card);
   const currentStage = card.processing_stage;
-  // Pending = script done, waiting for voiceover. Show as paused at "Queued for Voice" (index 2)
-  const currentIdx = isPending
-    ? 2
-    : currentStage ? STAGES.findIndex((s) => s.key === currentStage) : -1;
+  const currentIdx = currentStage ? stages.findIndex((s) => s.key === currentStage) : -1;
 
   const handleTerminate = async () => {
     setTerminating(true);
@@ -327,23 +349,20 @@ function StageStepper({ card, onRefresh }: { card: ProcessedCard; onRefresh: () 
         </button>
       </div>
       <div className="flex items-center gap-1">
-        {STAGES.map((stage, idx) => {
+        {stages.map((stage, idx) => {
           const isDone = idx < currentIdx;
           const isActive = idx === currentIdx;
 
           return (
             <div key={stage.key} className="flex items-center gap-1 flex-1 min-w-0">
-              {/* Step dot/icon */}
               <div className="flex flex-col items-center gap-1 flex-1">
                 <div className="flex items-center w-full">
-                  {/* Connector line before */}
                   {idx > 0 && (
                     <div
                       className="h-[2px] flex-1 rounded t"
                       style={{ background: isDone || isActive ? 'var(--warning)' : 'var(--border-light)' }}
                     />
                   )}
-                  {/* Dot */}
                   <div
                     className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${isActive ? 'pulse' : ''}`}
                     style={{
@@ -361,8 +380,7 @@ function StageStepper({ card, onRefresh }: { card: ProcessedCard; onRefresh: () 
                       <div className="w-1.5 h-1.5 rounded-full" style={{ background: 'var(--text-muted)' }} />
                     )}
                   </div>
-                  {/* Connector line after */}
-                  {idx < STAGES.length - 1 && (
+                  {idx < stages.length - 1 && (
                     <div
                       className="h-[2px] flex-1 rounded t"
                       style={{ background: isDone ? 'var(--success)' : 'var(--border-light)' }}
@@ -371,10 +389,7 @@ function StageStepper({ card, onRefresh }: { card: ProcessedCard; onRefresh: () 
                 </div>
                 <span
                   className="text-[9px] font-bold uppercase tracking-wide"
-                  style={{
-                    color: isDone ? 'var(--success)' : isActive ? 'var(--warning)' : 'var(--text-muted)',
-                    opacity: isPending ? 0.5 : 1,
-                  }}
+                  style={{ color: isDone ? 'var(--success)' : isActive ? 'var(--warning)' : 'var(--text-muted)' }}
                 >
                   {stage.label}
                 </span>
