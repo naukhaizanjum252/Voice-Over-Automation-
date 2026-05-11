@@ -55,13 +55,13 @@ export async function recoverStaleJobs(): Promise<number> {
 
   for (const card of staleCards) {
     const staleMins = Math.round((Date.now() - new Date(card.updated_at).getTime()) / 60000);
-    console.log(`[stale-recovery] Resetting card "${card.card_name}" (stuck for ${staleMins}min) → pending for reprocessing`);
+    console.log(`[stale-recovery] Resetting card "${card.card_name}" (stuck for ${staleMins}min) → queued for reprocessing`);
 
     const { error: updateError } = await supabase
       .from('processed_cards')
       .update({
-        status: 'pending',
-        processing_stage: null,
+        status: 'processing',
+        processing_stage: 'queued',
         error_message: null,
         updated_at: new Date().toISOString(),
       })

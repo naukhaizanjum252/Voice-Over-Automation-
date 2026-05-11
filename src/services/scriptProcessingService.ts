@@ -196,7 +196,7 @@ async function processScriptCard(
       console.log(`[script] Card "${cardName}" moved to voiceover list ${targetListId}`);
     }
 
-    // 5. Mark as pending — save script URL for UI
+    // 5. Mark as pending — script is done, voiceover phase picks this up next
     await upsertCard(cardId, cardName, channel.id, 'pending', null, null, null, uploaded.url);
 
     return { cardId, cardName, success: true };
