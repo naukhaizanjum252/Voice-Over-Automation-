@@ -11,12 +11,11 @@ interface Props {
 }
 
 const STAGES: { key: ProcessingStage; label: string }[] = [
-  { key: 'script_generating', label: 'Writing Script' },
-  { key: 'downloading', label: 'Fetching Script' },
-  { key: 'extracting', label: 'Reading Script' },
-  { key: 'queued', label: 'Queued for Voice' },
-  { key: 'generating', label: 'Generating Audio' },
-  { key: 'uploading', label: 'Uploading to Trello' },
+  { key: 'script_generating', label: 'Reading Title' },
+  { key: 'downloading', label: 'Generating Script' },
+  { key: 'extracting', label: 'Queued for Voice' },
+  { key: 'queued', label: 'Generating Voice' },
+  { key: 'generating', label: 'Uploading' },
 ];
 
 export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
@@ -29,7 +28,7 @@ export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
 
   const successRate = total > 0 ? Math.round((completed / total) * 100) : 0;
   const failedCards = cards.filter((c) => c.status === 'failed');
-  const processingCards = cards.filter((c) => c.status === 'processing');
+  const processingCards = cards.filter((c) => c.status === 'processing' || c.status === 'pending');
 
   const handleRun = async () => {
     setRunning(true);
@@ -290,8 +289,13 @@ export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
 
 function StageStepper({ card, onRefresh }: { card: ProcessedCard; onRefresh: () => void }) {
   const [terminating, setTerminating] = useState(false);
+  const isPending = card.status === 'pending';
   const currentStage = card.processing_stage;
-  const currentIdx = currentStage ? STAGES.findIndex((s) => s.key === currentStage) : -1;
+  // For pending cards (script done, awaiting voiceover): Reading Title + Generating Script done,
+  // paused at "Queued for Voice" (index 2)
+  const currentIdx = isPending
+    ? 2
+    : currentStage ? STAGES.findIndex((s) => s.key === currentStage) : -1;
 
   const handleTerminate = async () => {
     setTerminating(true);
@@ -306,22 +310,31 @@ function StageStepper({ card, onRefresh }: { card: ProcessedCard; onRefresh: () 
     finally { setTerminating(false); }
   };
 
+  const borderColor = isPending ? 'var(--accent)' : 'var(--warning)';
+  const bgColor = isPending ? 'var(--accent-muted)' : 'var(--warning-muted)';
+
   return (
-    <div className="rounded-xl p-3.5" style={{ background: 'var(--warning-muted)', border: '1px solid var(--warning)' }}>
+    <div className="rounded-xl p-3.5" style={{ background: bgColor, border: `1px solid ${borderColor}` }}>
       <div className="flex items-center justify-between mb-2.5">
         <p className="text-[12px] font-semibold truncate" style={{ color: 'var(--text)' }}>
           {card.card_name || card.trello_card_id}
         </p>
-        <button
-          onClick={handleTerminate}
-          disabled={terminating}
-          className="h-6 px-2 rounded-md text-[10px] font-bold shrink-0 t flex items-center gap-1 disabled:opacity-40"
-          style={{ background: 'var(--danger-muted)', color: 'var(--danger)', border: '1px solid var(--danger)' }}
-          title="Terminate this process"
-        >
-          {terminating ? <Spinner /> : <StopIcon size={9} />}
-          Stop
-        </button>
+        {isPending ? (
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0" style={{ background: 'var(--accent-muted)', color: 'var(--accent-dark)', border: '1px solid var(--accent)' }}>
+            Queued for Voice
+          </span>
+        ) : (
+          <button
+            onClick={handleTerminate}
+            disabled={terminating}
+            className="h-6 px-2 rounded-md text-[10px] font-bold shrink-0 t flex items-center gap-1 disabled:opacity-40"
+            style={{ background: 'var(--danger-muted)', color: 'var(--danger)', border: '1px solid var(--danger)' }}
+            title="Terminate this process"
+          >
+            {terminating ? <Spinner /> : <StopIcon size={9} />}
+            Stop
+          </button>
+        )}
       </div>
       <div className="flex items-center gap-1">
         {STAGES.map((stage, idx) => {
@@ -338,20 +351,25 @@ function StageStepper({ card, onRefresh }: { card: ProcessedCard; onRefresh: () 
                   {idx > 0 && (
                     <div
                       className="h-[2px] flex-1 rounded t"
-                      style={{ background: isDone || isActive ? 'var(--warning)' : 'var(--border-light)' }}
+                      style={{ background: isDone || isActive ? (isPending ? 'var(--accent)' : 'var(--warning)') : 'var(--border-light)' }}
                     />
                   )}
                   {/* Dot */}
                   <div
-                    className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${isActive ? 'pulse' : ''}`}
+                    className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${isActive && !isPending ? 'pulse' : ''}`}
                     style={{
-                      background: isDone ? 'var(--success)' : isActive ? 'var(--warning)' : 'var(--surface-3)',
-                      border: isActive ? '2px solid var(--warning)' : 'none',
+                      background: isDone ? 'var(--success)' : isActive ? (isPending ? 'var(--accent)' : 'var(--warning)') : 'var(--surface-3)',
+                      border: isActive ? `2px solid ${isPending ? 'var(--accent)' : 'var(--warning)'}` : 'none',
                     }}
                   >
                     {isDone ? (
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3">
                         <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    ) : isActive && isPending ? (
+                      <svg width="8" height="8" viewBox="0 0 24 24" fill="#fff">
+                        <rect x="5" y="4" width="5" height="16" rx="1" />
+                        <rect x="14" y="4" width="5" height="16" rx="1" />
                       </svg>
                     ) : isActive ? (
                       <Spinner />
