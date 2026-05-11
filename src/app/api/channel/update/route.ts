@@ -6,7 +6,13 @@ export const dynamic = 'force-dynamic';
 export async function PUT(request: Request) {
   try {
     const body = await request.json();
-    const { id, name, trello_board_id, trello_list_ids, auto_run_enabled, voice_config } = body;
+    const {
+      id, name, trello_board_id, trello_list_ids,
+      title_list_mappings,
+      niche, format, length, character_count, output, note,
+      feeder_scripts,
+      auto_run_enabled, voice_config,
+    } = body;
 
     if (!id) {
       return NextResponse.json({ error: 'id is required' }, { status: 400 });
@@ -25,6 +31,14 @@ export async function PUT(request: Request) {
         name,
         trello_board_id,
         trello_list_ids,
+        title_list_mappings: title_list_mappings ?? [],
+        niche: niche || null,
+        format: format || null,
+        length: length || null,
+        character_count: character_count ?? null,
+        output: output || null,
+        note: note || null,
+        feeder_scripts: feeder_scripts ?? [],
         auto_run_enabled: auto_run_enabled ?? true,
         voice_config: voice_config ?? undefined,
       })

@@ -25,10 +25,21 @@ export async function POST(request: Request) {
 
     const ch = channel as Channel;
 
-    // Phase 1: Generate scripts (if title list + master prompt configured)
+    // Phase 1: Generate scripts (if title list mappings configured)
     let scriptResults: { cardId: string; cardName: string; success: boolean; error?: string }[] = [];
-    if (ch.trello_title_list_id && ch.master_prompt) {
-      scriptResults = await processChannelScripts(ch);
+    if (ch.title_list_mappings && ch.title_list_mappings.length > 0) {
+      const { fetchPrimaryDocTexts } = await import('@/services/scriptProcessingService');
+      const primaryDocTexts = await fetchPrimaryDocTexts();
+
+      // Fetch configured model
+      const { data: modelSetting } = await supabase
+        .from('app_settings')
+        .select('value')
+        .eq('key', 'script_model')
+        .single();
+      const scriptModel = modelSetting?.value || undefined;
+
+      scriptResults = await processChannelScripts(ch, primaryDocTexts, scriptModel);
     }
 
     // Phase 2: Generate voiceovers

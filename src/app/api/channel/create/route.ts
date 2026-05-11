@@ -4,7 +4,13 @@ import { supabase } from '@/lib/supabase';
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { name, trello_board_id, trello_list_ids, trello_title_list_id, master_prompt, auto_run_enabled, voice_config } = body;
+    const {
+      name, trello_board_id, trello_list_ids,
+      title_list_mappings,
+      niche, format, length, character_count, output, note,
+      feeder_scripts,
+      auto_run_enabled, voice_config,
+    } = body;
 
     if (!name || !trello_board_id || !trello_list_ids?.length) {
       return NextResponse.json(
@@ -19,8 +25,14 @@ export async function POST(request: Request) {
         name,
         trello_board_id,
         trello_list_ids,
-        trello_title_list_id: trello_title_list_id || null,
-        master_prompt: master_prompt || null,
+        title_list_mappings: title_list_mappings ?? [],
+        niche: niche || null,
+        format: format || null,
+        length: length || null,
+        character_count: character_count ?? null,
+        output: output || null,
+        note: note || null,
+        feeder_scripts: feeder_scripts ?? [],
         auto_run_enabled: auto_run_enabled ?? true,
         voice_config: voice_config ?? {
           voiceId: 'EXAVITQu4vr4xnSDxMaL',

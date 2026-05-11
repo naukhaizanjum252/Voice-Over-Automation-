@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
 import { getBoards, getLists } from '@/services/trelloService';
-import type { ChannelStats, Channel, ProcessedCard } from '@/types';
+import type { ChannelStats, Channel, ProcessedCard, TitleListMappingResolved } from '@/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -62,7 +62,12 @@ export async function GET() {
         channel: ch,
         boardName: boardNameMap.get(ch.trello_board_id) ?? ch.trello_board_id,
         listNames: ch.trello_list_ids.map((lid) => listNameMap.get(lid) ?? lid),
-        titleListName: ch.trello_title_list_id ? (listNameMap.get(ch.trello_title_list_id) ?? ch.trello_title_list_id) : null,
+        titleListMappings: (ch.title_list_mappings ?? []).map((m: { titleListId: string; voiceoverListId: string }): TitleListMappingResolved => ({
+          titleListId: m.titleListId,
+          titleListName: listNameMap.get(m.titleListId) ?? m.titleListId,
+          voiceoverListId: m.voiceoverListId,
+          voiceoverListName: listNameMap.get(m.voiceoverListId) ?? m.voiceoverListId,
+        })),
         total: channelCards.length,
         completed,
         failed,

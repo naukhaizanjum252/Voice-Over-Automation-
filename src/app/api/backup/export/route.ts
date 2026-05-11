@@ -22,7 +22,7 @@ export async function GET() {
     if (cardErr) throw new Error(`Failed to fetch cards: ${cardErr.message}`);
 
     // Build channels CSV
-    const channelHeaders = ['id', 'name', 'trello_board_id', 'trello_list_ids', 'trello_title_list_id', 'auto_run_enabled', 'voice_config', 'master_prompt', 'created_at'];
+    const channelHeaders = ['id', 'name', 'trello_board_id', 'trello_list_ids', 'title_list_mappings', 'auto_run_enabled', 'voice_config', 'niche', 'format', 'length', 'character_count', 'output', 'note', 'feeder_scripts', 'created_at'];
     const channelRows = (channels || []).map((ch) =>
       channelHeaders.map((h) => {
         const val = ch[h];

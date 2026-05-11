@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server';
 import Anthropic from '@anthropic-ai/sdk';
+import { supabase } from '@/lib/supabase';
+import { generateScript, type ScriptGenConfig } from '@/services/scriptService';
+import { fetchPrimaryDocTexts } from '@/services/scriptProcessingService';
+import type { Channel } from '@/types';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,12 +21,11 @@ export async function GET(request: Request) {
       : 'NOT SET';
 
     if (anthropicKey) {
-      // Try multiple model IDs to find which one works
+      // Test all three models available in the Script Model dropdown
       const models = [
-        'claude-sonnet-4-20250514',
         'claude-haiku-4-5-20251001',
-        'claude-3-5-sonnet-20241022',
-        'claude-3-haiku-20240307',
+        'claude-sonnet-4-6',
+        'claude-opus-4-6',
       ];
 
       const client = new Anthropic({ apiKey: anthropicKey });
@@ -39,7 +42,6 @@ export async function GET(request: Request) {
             response: message.content[0],
             usage: message.usage,
           };
-          break; // stop on first success
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           results[`anthropic_${model}`] = { status: 'FAILED', error: errMsg.slice(0, 200) };
@@ -185,6 +187,66 @@ export async function GET(request: Request) {
     }
   } else {
     results['ai84'] = 'AI84_API_KEY not set';
+  }
+
+  // ── Script Generation Test ──
+  // Usage: /api/debug?test=script&title=Your+Title+Here&channel=test
+  if (test === 'script') {
+    const title = searchParams.get('title') || 'Test Topic';
+    const channelName = searchParams.get('channel') || 'test';
+
+    try {
+      // Fetch channel by name
+      const { data: channel, error: chErr } = await supabase
+        .from('channels')
+        .select('*')
+        .ilike('name', channelName)
+        .single();
+
+      if (chErr || !channel) {
+        return NextResponse.json({ error: `Channel "${channelName}" not found`, details: chErr?.message }, { status: 404 });
+      }
+
+      const ch = channel as Channel;
+
+      // Fetch primary docs
+      const primaryDocTexts = await fetchPrimaryDocTexts();
+
+      // Fetch model setting
+      const { data: modelSetting } = await supabase
+        .from('app_settings')
+        .select('value')
+        .eq('key', 'script_model')
+        .single();
+      const model = modelSetting?.value || undefined;
+
+      // Build config (same as processScriptCard does)
+      const config: ScriptGenConfig = {
+        primaryDocTexts,
+        niche: ch.niche,
+        format: ch.format,
+        length: ch.length,
+        characterCount: ch.character_count,
+        output: ch.output,
+        note: ch.note,
+      };
+
+      // Generate script
+      const scriptText = await generateScript(config, title, model);
+
+      return NextResponse.json({
+        channel: ch.name,
+        model: model || 'claude-haiku-4-5-20251001 (default)',
+        title,
+        primaryDocs: primaryDocTexts.length,
+        scriptLength: scriptText.length,
+        scriptPreview: scriptText.slice(0, 500),
+        fullScript: scriptText,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return NextResponse.json({ error: msg }, { status: 500 });
+    }
   }
 
   return NextResponse.json(results, { status: 200 });

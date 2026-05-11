@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
-import type { TrelloBoard, TrelloList, Voice, Channel } from '@/types';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import type { TrelloBoard, TrelloList, Voice, Channel, StoredFile, TitleListMapping } from '@/types';
 
 interface Props {
   onCreated: () => void;
@@ -28,9 +28,18 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
 
   const [autoRun, setAutoRun] = useState(editChannel?.auto_run_enabled ?? true);
 
-  // Script generation config
-  const [titleListId, setTitleListId] = useState('');
-  const [masterPrompt, setMasterPrompt] = useState('');
+  // Script generation config (template fields)
+  const [titleListMappings, setTitleListMappings] = useState<TitleListMapping[]>(editChannel?.title_list_mappings ?? []);
+  const [niche, setNiche] = useState(editChannel?.niche ?? '');
+  const [format, setFormat] = useState(editChannel?.format ?? '');
+  const [length, setLength] = useState(editChannel?.length ?? '');
+  const [characterCount, setCharacterCount] = useState<string>(editChannel?.character_count?.toString() ?? '');
+  const [output, setOutput] = useState(editChannel?.output ?? '');
+  const [note, setNote] = useState(editChannel?.note ?? '');
+  const [feederScripts, setFeederScripts] = useState<StoredFile[]>(editChannel?.feeder_scripts ?? []);
+  const [uploading, setUploading] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const dragCounter = useRef(0);
 
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voicesLoading, setVoicesLoading] = useState(true);
@@ -43,6 +52,7 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
   const [style, setStyle] = useState(editChannel?.voice_config?.style ?? 0.0);
 
   const boardDropdownRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Close board dropdown on outside click
   useEffect(() => {
@@ -104,7 +114,6 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
       })
       .then((d) => {
         if (Array.isArray(d)) setLists(d);
-        // Only reset selection when user actively switches to a different board
         if (boardActuallyChanged) {
           setSelectedLists([]);
         }
@@ -140,6 +149,54 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
 
   const selectedVoice = voices.find((v) => v.voice_id === voiceId);
 
+  // ── Feeder script upload ──
+  const handleFileUpload = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+
+    const channelId = editChannel?.id ?? `temp_${Date.now()}`;
+
+    for (const file of Array.from(files)) {
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('channelId', channelId);
+
+        const res = await fetch('/api/channel/competitor-scripts', {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!res.ok) {
+          const err = await res.json();
+          alert(`Failed to upload "${file.name}": ${err.error}`);
+          continue;
+        }
+
+        const fileRef: StoredFile = await res.json();
+        setFeederScripts((prev) => [...prev, fileRef]);
+      } catch {
+        alert(`Failed to upload "${file.name}"`);
+      }
+    }
+
+    setUploading(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [editChannel?.id]);
+
+  const handleRemoveScript = useCallback(async (storagePath: string) => {
+    try {
+      await fetch('/api/channel/competitor-scripts', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ storagePath }),
+      });
+      setFeederScripts((prev) => prev.filter((s) => s.storage_path !== storagePath));
+    } catch {
+      alert('Failed to remove file');
+    }
+  }, []);
+
   const handleSubmit = async () => {
     if (!canSubmit) return;
     setSaving(true);
@@ -148,8 +205,14 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
         name: name.trim(),
         trello_board_id: selectedBoard,
         trello_list_ids: selectedLists,
-          trello_title_list_id: titleListId || null,
-          master_prompt: masterPrompt.trim() || null,
+        title_list_mappings: titleListMappings,
+        niche: niche.trim() || null,
+        format: format.trim() || null,
+        length: length.trim() || null,
+        character_count: characterCount ? parseInt(characterCount, 10) : null,
+        output: output.trim() || null,
+        note: note.trim() || null,
+        feeder_scripts: feederScripts,
         auto_run_enabled: autoRun,
         voice_config: { voiceId, speed, pitch, stability, style },
       };
@@ -215,7 +278,6 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
             <Field label="Trello Board">
               {boardsLoading ? <div className="h-10 shimmer" /> : (
                 <div className="relative" ref={boardDropdownRef}>
-                  {/* Trigger */}
                   <button
                     type="button"
                     onClick={() => setBoardDropdownOpen(!boardDropdownOpen)}
@@ -237,13 +299,11 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
                     </svg>
                   </button>
 
-                  {/* Dropdown */}
                   {boardDropdownOpen && (
                     <div
                       className="absolute left-0 right-0 top-full mt-1 rounded-xl border overflow-hidden z-20"
                       style={{ background: 'var(--surface)', borderColor: 'var(--border)', boxShadow: 'var(--shadow-lg)' }}
                     >
-                      {/* Search */}
                       <div className="p-2 border-b" style={{ borderColor: 'var(--border-light)' }}>
                         <div className="relative">
                           <SearchIcon />
@@ -258,7 +318,6 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
                           />
                         </div>
                       </div>
-                      {/* Options */}
                       <div className="max-h-48 overflow-y-auto">
                         {filteredBoards.length === 0 ? (
                           <p className="text-xs text-center py-4" style={{ color: 'var(--text-muted)' }}>
@@ -292,14 +351,13 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
               )}
             </Field>
 
-            {/* Lists — searchable multi-select */}
+            {/* Lists */}
             {selectedBoard && (
               <Field label="Voiceover Source List (cards with scripts to convert to audio)">
                 {listsLoading ? <div className="h-16 shimmer" /> : lists.length === 0 ? (
                   <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No lists found in this board.</p>
                 ) : (
                   <div>
-                    {/* Search (only show if > 5 lists) */}
                     {lists.length > 5 && (
                       <div className="relative mb-2">
                         <SearchIcon />
@@ -336,7 +394,7 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
                         );
                       })}
                       {filteredLists.length === 0 && listSearch && (
-                        <p className="text-xs py-2" style={{ color: 'var(--text-muted)' }}>No lists match "{listSearch}"</p>
+                        <p className="text-xs py-2" style={{ color: 'var(--text-muted)' }}>No lists match &quot;{listSearch}&quot;</p>
                       )}
                     </div>
                     {selectedLists.length > 0 && (
@@ -383,83 +441,288 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
               style={{ borderColor: 'var(--border-light)', background: 'var(--accent-muted)' }}
             >
               <p className="text-[12px] font-semibold" style={{ color: 'var(--accent-dark)' }}>
-                Optional: AI Script Generation
+                Script Generation Template
               </p>
               <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                Set up a title list and master prompt to automatically generate scripts from card titles using Claude AI. Skip this step if you only want voiceover processing.
+                Configure the per-channel template for AI script generation. Primary instruction documents are managed separately (shared across all channels). All fields below are optional.
               </p>
             </div>
 
-            {/* Title list selector */}
-            <Field label="Title List (cards whose titles will be used to generate scripts)">
+            {/* Title list mappings */}
+            <Field label="Title Lists → Voiceover Lists (map each source to its target)">
               {listsLoading ? <div className="h-10 shimmer" /> : lists.length === 0 ? (
                 <p className="text-xs" style={{ color: 'var(--text-muted)' }}>Select a board in Step 1 first.</p>
               ) : (
-                <div className="flex flex-wrap gap-2">
-                  {/* None option */}
-                  <button
-                    onClick={() => setTitleListId('')}
-                    className="h-8 px-3.5 rounded-lg text-xs font-semibold t border flex items-center gap-1.5"
-                    style={{
-                      background: !titleListId ? 'var(--accent)' : 'var(--surface)',
-                      borderColor: !titleListId ? 'var(--accent)' : 'var(--border)',
-                      color: !titleListId ? '#fff' : 'var(--text-secondary)',
-                      boxShadow: !titleListId ? 'var(--shadow-accent)' : 'none',
-                    }}
-                  >
-                    {!titleListId && (
-                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
-                    )}
-                    None (skip)
-                  </button>
-                  {lists.filter((l) => !selectedLists.includes(l.id)).map((l) => {
-                    const on = titleListId === l.id;
-                    return (
+                <div>
+                  {/* Available title lists (those not already in voiceover lists and not already mapped) */}
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {lists.filter((l) => !selectedLists.includes(l.id) && !titleListMappings.some((m) => m.titleListId === l.id)).map((l) => (
                       <button
                         key={l.id}
-                        onClick={() => setTitleListId(l.id)}
+                        onClick={() => setTitleListMappings((prev) => [...prev, { titleListId: l.id, voiceoverListId: selectedLists[0] ?? '' }])}
                         className="h-8 px-3.5 rounded-lg text-xs font-semibold t border flex items-center gap-1.5"
                         style={{
-                          background: on ? 'var(--accent)' : 'var(--surface)',
-                          borderColor: on ? 'var(--accent)' : 'var(--border)',
-                          color: on ? '#fff' : 'var(--text-secondary)',
-                          boxShadow: on ? 'var(--shadow-accent)' : 'none',
+                          background: 'var(--surface)',
+                          borderColor: 'var(--border)',
+                          color: 'var(--text-secondary)',
                         }}
                       >
-                        {on && (
-                          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12" /></svg>
-                        )}
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 5v14M5 12h14" /></svg>
                         {l.name}
                       </button>
-                    );
-                  })}
+                    ))}
+                  </div>
+
+                  {/* Active mappings */}
+                  {titleListMappings.length > 0 && (
+                    <div className="space-y-2">
+                      {titleListMappings.map((mapping) => {
+                        const titleList = lists.find((l) => l.id === mapping.titleListId);
+                        return (
+                          <div
+                            key={mapping.titleListId}
+                            className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl border"
+                            style={{ background: 'var(--accent-muted)', borderColor: 'var(--accent)' }}
+                          >
+                            {/* Title list name */}
+                            <span className="text-[12px] font-bold shrink-0" style={{ color: 'var(--accent-dark)' }}>
+                              {titleList?.name ?? mapping.titleListId}
+                            </span>
+
+                            {/* Arrow */}
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--text-muted)', flexShrink: 0 }}>
+                              <path d="M5 12h14M12 5l7 7-7 7" />
+                            </svg>
+
+                            {/* Target voiceover list dropdown */}
+                            <select
+                              value={mapping.voiceoverListId}
+                              onChange={(e) => {
+                                const newId = e.target.value;
+                                setTitleListMappings((prev) =>
+                                  prev.map((m) => m.titleListId === mapping.titleListId ? { ...m, voiceoverListId: newId } : m)
+                                );
+                              }}
+                              className="flex-1 h-8 px-2.5 rounded-lg text-[12px] font-semibold"
+                              style={{
+                                background: 'var(--surface)',
+                                border: '1px solid var(--border)',
+                                color: 'var(--text)',
+                                outline: 'none',
+                              }}
+                            >
+                              {selectedLists.map((lid) => {
+                                const list = lists.find((l) => l.id === lid);
+                                return (
+                                  <option key={lid} value={lid}>
+                                    {list?.name ?? lid}
+                                  </option>
+                                );
+                              })}
+                            </select>
+
+                            {/* Remove button */}
+                            <button
+                              onClick={() => setTitleListMappings((prev) => prev.filter((m) => m.titleListId !== mapping.titleListId))}
+                              className="p-1.5 rounded-md t shrink-0"
+                              style={{ color: 'var(--text-muted)' }}
+                              title="Remove mapping"
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                <path d="M18 6L6 18M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {titleListMappings.length === 0 && (
+                    <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
+                      Click a list above to add a title source → voiceover target mapping. Skip if you don&apos;t need script generation.
+                    </p>
+                  )}
                 </div>
               )}
             </Field>
 
-            {/* Master prompt */}
-            {titleListId && (
-              <Field label="Master Prompt">
-                <textarea
-                  value={masterPrompt}
-                  onChange={(e) => setMasterPrompt(e.target.value)}
-                  placeholder="Write the system prompt that will be used to generate scripts. The card title will be appended automatically.&#10;&#10;Example: You are a professional scriptwriter for a Hindi tech YouTube channel. Write an engaging voiceover script of about 800 words for the following topic. Use a conversational tone..."
-                  rows={6}
-                  style={{
-                    ...inputStyle,
-                    height: 'auto',
-                    padding: '12px',
-                    resize: 'vertical' as const,
-                    minHeight: '120px',
-                    lineHeight: '1.5',
-                  }}
-                />
-                {masterPrompt && (
+            {/* Show all script config fields when at least one mapping exists */}
+            {titleListMappings.length > 0 && (
+              <>
+                {/* Niche */}
+                <Field label="Niche">
+                  <input
+                    type="text"
+                    value={niche}
+                    onChange={(e) => setNiche(e.target.value)}
+                    placeholder="e.g. Pirate History / Maritime History / Golden Age of Piracy"
+                    style={inputStyle}
+                  />
+                </Field>
+
+                {/* Format */}
+                <Field label="Format">
+                  <input
+                    type="text"
+                    value={format}
+                    onChange={(e) => setFormat(e.target.value)}
+                    placeholder="e.g. Documentary, Narration, Storytelling..."
+                    style={inputStyle}
+                  />
+                </Field>
+
+                {/* Length */}
+                <Field label="Length (minutes)">
+                  <input
+                    type="text"
+                    value={length}
+                    onChange={(e) => setLength(e.target.value)}
+                    placeholder="e.g. 10-15 minutes, 20 minutes..."
+                    style={inputStyle}
+                  />
+                </Field>
+
+                {/* Characters */}
+                <Field label="Characters (count)">
+                  <input
+                    type="number"
+                    value={characterCount}
+                    onChange={(e) => setCharacterCount(e.target.value)}
+                    placeholder="e.g. 5000"
+                    min={0}
+                    style={inputStyle}
+                  />
                   <p className="text-[11px] mt-1.5" style={{ color: 'var(--text-muted)' }}>
-                    {masterPrompt.length} characters
+                    Target character count for the script. Leave blank to let the AI decide.
                   </p>
-                )}
-              </Field>
+                </Field>
+
+                {/* Output */}
+                <Field label="Output">
+                  <input
+                    type="text"
+                    value={output}
+                    onChange={(e) => setOutput(e.target.value)}
+                    placeholder="e.g. traditional, conversational, cinematic..."
+                    style={inputStyle}
+                  />
+                </Field>
+
+                {/* Note */}
+                <Field label="Note">
+                  <textarea
+                    value={note}
+                    onChange={(e) => setNote(e.target.value)}
+                    placeholder="Any extra instructions for this channel..."
+                    rows={3}
+                    style={{
+                      ...inputStyle,
+                      height: 'auto',
+                      padding: '12px',
+                      resize: 'vertical' as const,
+                      minHeight: '72px',
+                      lineHeight: '1.5',
+                    }}
+                  />
+                </Field>
+
+                {/* Feeder Scripts Upload */}
+                <Field label="Feeder Scripts (style examples for AI to analyze)">
+                  <div
+                    className="rounded-xl border p-4"
+                    style={{ borderColor: 'var(--border-light)', background: 'var(--surface)' }}
+                  >
+                    {feederScripts.length > 0 && (
+                      <div className="space-y-2 mb-3">
+                        {feederScripts.map((s) => (
+                          <div
+                            key={s.storage_path}
+                            className="flex items-center justify-between px-3 py-2 rounded-lg"
+                            style={{ background: 'var(--surface-2)' }}
+                          >
+                            <div className="flex items-center gap-2 min-w-0">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: 'var(--accent)', flexShrink: 0 }}>
+                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                                <polyline points="14 2 14 8 20 8" />
+                              </svg>
+                              <span className="text-[12px] font-medium truncate" style={{ color: 'var(--text)' }}>
+                                {s.name}
+                              </span>
+                              <span className="text-[10px] shrink-0" style={{ color: 'var(--text-muted)' }}>
+                                {(s.size / 1024).toFixed(0)} KB
+                              </span>
+                            </div>
+                            <button
+                              onClick={() => handleRemoveScript(s.storage_path)}
+                              className="p-1 rounded-md t shrink-0 ml-2"
+                              style={{ color: 'var(--text-muted)' }}
+                              title="Remove"
+                            >
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                <path d="M18 6L6 18M6 6l12 12" />
+                              </svg>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".txt,.doc,.docx,.pdf"
+                      multiple
+                      onChange={(e) => handleFileUpload(e.target.files)}
+                      className="hidden"
+                    />
+                    <div
+                      onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); dragCounter.current++; setDragging(true); }}
+                      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                      onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); dragCounter.current--; if (dragCounter.current === 0) setDragging(false); }}
+                      onDrop={(e) => { e.preventDefault(); e.stopPropagation(); dragCounter.current = 0; setDragging(false); handleFileUpload(e.dataTransfer.files); }}
+                      onClick={() => !uploading && fileInputRef.current?.click()}
+                      className="w-full py-3 rounded-lg border-2 border-dashed t flex items-center justify-center gap-2 text-[12px] font-semibold"
+                      style={{
+                        borderColor: dragging ? 'var(--accent)' : 'var(--border)',
+                        color: uploading ? 'var(--text-muted)' : 'var(--accent-dark)',
+                        background: dragging ? 'var(--accent-muted)' : 'transparent',
+                        cursor: uploading ? 'wait' : 'pointer',
+                      }}
+                    >
+                      {uploading ? (
+                        <>
+                          <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56" /></svg>
+                          Uploading...
+                        </>
+                      ) : dragging ? (
+                        <>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                            <polyline points="17 8 12 3 7 8" />
+                            <line x1="12" y1="3" x2="12" y2="15" />
+                          </svg>
+                          Drop files here
+                        </>
+                      ) : (
+                        <>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                            <polyline points="17 8 12 3 7 8" />
+                            <line x1="12" y1="3" x2="12" y2="15" />
+                          </svg>
+                          Drop files or click to upload (.txt, .docx, .pdf)
+                        </>
+                      )}
+                    </div>
+
+                    <p className="text-[10px] mt-2 text-center" style={{ color: 'var(--text-muted)' }}>
+                      {feederScripts.length} file{feederScripts.length !== 1 ? 's' : ''} uploaded
+                      {feederScripts.length > 0 && ` (${(feederScripts.reduce((a, s) => a + s.size, 0) / 1024).toFixed(0)} KB total)`}
+                    </p>
+                  </div>
+                </Field>
+              </>
             )}
 
             {/* Navigation */}
@@ -474,11 +737,11 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
               </button>
               <button
                 onClick={() => setStep(3)}
-                disabled={titleListId && !masterPrompt.trim() ? true : false}
+                disabled={false}
                 className="h-10 px-5 rounded-xl text-[13px] font-semibold t flex items-center gap-2 disabled:opacity-30"
                 style={{ background: 'var(--accent)', color: '#fff', boxShadow: 'var(--shadow-accent)' }}
               >
-                {titleListId ? 'Continue' : 'Skip to Voice'}
+                {titleListMappings.length > 0 ? 'Continue' : 'Skip to Voice'}
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
               </button>
             </div>
@@ -505,12 +768,11 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
                 </div>
               ) : (
                 <>
-                  {/* Voice search + paste ID — unified bar */}
+                  {/* Voice search + paste ID */}
                   <div
                     className="flex items-center mb-2 rounded-xl border overflow-hidden"
                     style={{ borderColor: 'var(--border)', background: 'var(--surface)', height: '40px' }}
                   >
-                    {/* Search section */}
                     <div className="relative flex-1 h-full">
                       <svg
                         className="absolute left-3 top-1/2 -translate-y-1/2"
@@ -535,9 +797,7 @@ export default function ChannelForm({ onCreated, onCancel, editChannel }: Props)
                         }}
                       />
                     </div>
-                    {/* Divider */}
                     <div className="w-px h-5" style={{ background: 'var(--border)' }} />
-                    {/* Paste voice ID section */}
                     <input
                       type="text"
                       value={voiceId}

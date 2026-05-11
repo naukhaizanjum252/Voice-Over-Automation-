@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import ChannelForm from '@/components/ChannelForm';
 import ChannelList from '@/components/ChannelList';
+import PrimaryDocuments from '@/components/PrimaryDocuments';
 import StatsOverview, { type StatsFilter } from '@/components/StatsOverview';
 import type { ChannelStats, Channel } from '@/types';
 
@@ -11,6 +12,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingChannel, setEditingChannel] = useState<Channel | null>(null);
+  const [formKey, setFormKey] = useState(0);
   const [runningAll, setRunningAll] = useState(false);
   const [statsFilter, setStatsFilter] = useState<StatsFilter>(null);
 
@@ -166,7 +168,7 @@ export default function Dashboard() {
               </button>
             )}
             <button
-              onClick={() => setShowForm(!showForm)}
+              onClick={() => { setShowForm(!showForm); setEditingChannel(null); setFormKey((k) => k + 1); }}
               className="h-9 px-4 rounded-xl text-[13px] font-semibold t flex items-center gap-2"
               style={{
                 background: showForm ? 'var(--surface-2)' : 'var(--accent)',
@@ -207,12 +209,18 @@ export default function Dashboard() {
         {(showForm || editingChannel) && (
           <div className="mt-7 fade-up">
             <ChannelForm
+              key={formKey}
               editChannel={editingChannel}
               onCreated={() => { fetchChannels(); setShowForm(false); setEditingChannel(null); }}
               onCancel={() => { setShowForm(false); setEditingChannel(null); }}
             />
           </div>
         )}
+
+        {/* Primary Documents (global script instructions) */}
+        <div className="mt-7">
+          <PrimaryDocuments />
+        </div>
 
         {/* Channels */}
         <div className="mt-7">
@@ -272,6 +280,7 @@ export default function Dashboard() {
                 if (found) {
                   setEditingChannel(found.channel);
                   setShowForm(false);
+                  setFormKey((k) => k + 1);
                 }
               }}
             />

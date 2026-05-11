@@ -1,15 +1,19 @@
 import { supabase } from '@/lib/supabase';
-import type { Channel, ProcessingResult } from '@/types';
+import type { Channel, StoredFile, PrimaryDocument, ProcessingResult, TitleListMapping } from '@/types';
 import * as trelloService from './trelloService';
-import { generateScript } from './scriptService';
+import { generateScript, type ScriptGenConfig } from './scriptService';
+import { extractText } from './fileParserService';
 import { Document, Packer, Paragraph, TextRun } from 'docx';
+
+const FEEDER_SCRIPTS_BUCKET = 'feeder-scripts';
+const PRIMARY_DOCS_BUCKET = 'primary-documents';
 
 /**
  * Script Generation Pipeline
  *
  * Flow:
  *   Title List (source) → detect new cards → take card name as title
- *   → generate script via Claude (master prompt + title)
+ *   → generate script via Claude (primary docs + feeder scripts + template fields + title)
  *   → upload .docx to card → move card to Voiceover Source List (target)
  *
  * The voiceover cron then picks up cards from the target list separately.
@@ -17,28 +21,46 @@ import { Document, Packer, Paragraph, TextRun } from 'docx';
 
 /**
  * Processes all channels that have script generation enabled.
- * A channel qualifies when it has both trello_title_list_id AND master_prompt set.
+ * A channel qualifies when it has at least one title_list_mapping.
  */
 export async function processAllScripts(): Promise<ProcessingResult[]> {
   console.log('[script-cron] Fetching channels with script generation...');
   const { data: channels, error } = await supabase
     .from('channels')
     .select('*')
-    .eq('auto_run_enabled', true)
-    .not('trello_title_list_id', 'is', null)
-    .not('master_prompt', 'is', null);
+    .eq('auto_run_enabled', true);
 
   if (error) throw new Error(`Failed to fetch channels: ${error.message}`);
   if (!channels || channels.length === 0) {
+    console.log('[script-cron] No channels found.');
+    return [];
+  }
+
+  // Filter to channels that have at least one title list mapping
+  const scriptChannels = (channels as Channel[]).filter(
+    (ch) => ch.title_list_mappings && ch.title_list_mappings.length > 0
+  );
+
+  if (scriptChannels.length === 0) {
     console.log('[script-cron] No channels with script generation configured.');
     return [];
   }
 
+  // Pre-fetch primary documents ONCE (global, shared across all channels)
+  const primaryDocTexts = await fetchPrimaryDocTexts();
+  console.log(`[script-cron] Loaded ${primaryDocTexts.length} primary instruction documents`);
+
+  if (primaryDocTexts.length === 0) {
+    console.warn('[script-cron] No primary documents found — scripts may lack instructions');
+  }
+
+  // Fetch the configured model
+  const scriptModel = await fetchScriptModel();
+  console.log(`[script-cron] Using model: ${scriptModel}`);
+
   const results: ProcessingResult[] = [];
-  for (const channel of channels) {
-    const ch = channel as Channel;
-    if (!ch.trello_title_list_id || !ch.master_prompt) continue;
-    const channelResults = await processChannelScripts(ch);
+  for (const ch of scriptChannels) {
+    const channelResults = await processChannelScripts(ch, primaryDocTexts, scriptModel);
     results.push(...channelResults);
   }
   return results;
@@ -46,57 +68,71 @@ export async function processAllScripts(): Promise<ProcessingResult[]> {
 
 /**
  * Processes script generation for a single channel.
- * Watches the title list — any card without a script attachment gets processed.
+ * Iterates through all title_list_mappings — for each mapping, fetches cards
+ * from the title list and generates scripts, moving completed cards to the
+ * mapped voiceover list.
  */
 export async function processChannelScripts(
-  channel: Channel
+  channel: Channel,
+  primaryDocTexts: string[],
+  model?: string
 ): Promise<ProcessingResult[]> {
-  if (!channel.trello_title_list_id || !channel.master_prompt) {
+  if (!channel.title_list_mappings || channel.title_list_mappings.length === 0) {
     return [];
   }
 
   const results: ProcessingResult[] = [];
 
-  let cards;
-  try {
-    cards = await trelloService.getCardsInList(channel.trello_title_list_id);
-  } catch (err) {
-    console.error(`[script] Failed to fetch title list ${channel.trello_title_list_id}:`, err);
-    return [];
+  // Pre-fetch feeder script texts once per channel run
+  let feederTexts: string[] | undefined;
+  if (channel.feeder_scripts && channel.feeder_scripts.length > 0) {
+    feederTexts = await fetchStoredFileTexts(channel.feeder_scripts, FEEDER_SCRIPTS_BUCKET);
+    console.log(`[script] Loaded ${feederTexts.length} feeder scripts for channel "${channel.name}"`);
   }
 
-  if (cards.length === 0) {
-    console.log(`[script] No cards in title list for channel "${channel.name}"`);
-    return [];
-  }
-
-  for (const card of cards) {
-    // Skip cards that already have a script attachment
-    const existingScript = trelloService.getScriptAttachment(card.attachments || []);
-    if (existingScript) {
-      console.log(`[script] Card "${card.name}" already has a script, skipping`);
-      continue;
-    }
-
-    // Skip cards already being processed or completed (prevents duplicate Claude calls)
-    const { data: existing } = await supabase
-      .from('processed_cards')
-      .select('id, status')
-      .eq('trello_card_id', card.id)
-      .single();
-
-    if (existing && (existing.status === 'processing' || existing.status === 'completed' || existing.status === 'pending' || existing.status === 'failed')) {
-      console.log(`[script] Card "${card.name}" already ${existing.status}, skipping`);
-      continue;
-    }
-
+  // Process each title list → voiceover list mapping
+  for (const mapping of channel.title_list_mappings) {
+    let cards;
     try {
-      const result = await processScriptCard(card.id, card.name, channel);
-      results.push(result);
+      cards = await trelloService.getCardsInList(mapping.titleListId);
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      console.error(`[script] Card ${card.id} error:`, errMsg);
-      results.push({ cardId: card.id, cardName: card.name, success: false, error: errMsg });
+      console.error(`[script] Failed to fetch title list ${mapping.titleListId}:`, err);
+      continue;
+    }
+
+    if (cards.length === 0) {
+      console.log(`[script] No cards in title list ${mapping.titleListId} for channel "${channel.name}"`);
+      continue;
+    }
+
+    for (const card of cards) {
+      // Skip cards that already have a script attachment
+      const existingScript = trelloService.getScriptAttachment(card.attachments || []);
+      if (existingScript) {
+        console.log(`[script] Card "${card.name}" already has a script, skipping`);
+        continue;
+      }
+
+      // Skip cards already being processed or completed
+      const { data: existing } = await supabase
+        .from('processed_cards')
+        .select('id, status')
+        .eq('trello_card_id', card.id)
+        .single();
+
+      if (existing && (existing.status === 'processing' || existing.status === 'completed' || existing.status === 'pending' || existing.status === 'failed')) {
+        console.log(`[script] Card "${card.name}" already ${existing.status}, skipping`);
+        continue;
+      }
+
+      try {
+        const result = await processScriptCard(card.id, card.name, channel, primaryDocTexts, feederTexts, mapping.voiceoverListId, model);
+        results.push(result);
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[script] Card ${card.id} error:`, errMsg);
+        results.push({ cardId: card.id, cardName: card.name, success: false, error: errMsg });
+      }
     }
   }
 
@@ -105,23 +141,39 @@ export async function processChannelScripts(
 
 /**
  * Generates a script for a single card:
- * 1. Take card name as the title
- * 2. Generate script using master prompt + title (Claude)
+ * 1. Build config from primary docs + feeder scripts + channel template fields
+ * 2. Generate script using Claude
  * 3. Create .docx file from the script text
  * 4. Upload .docx to the card
- * 5. Move card to the voiceover source list (first list in trello_list_ids)
+ * 5. Move card to the target voiceover list
  */
 async function processScriptCard(
   cardId: string,
   cardName: string,
-  channel: Channel
+  channel: Channel,
+  primaryDocTexts: string[],
+  feederTexts?: string[],
+  targetListId?: string,
+  model?: string
 ): Promise<ProcessingResult> {
   await upsertCard(cardId, cardName, channel.id, 'processing', null, null, 'script_generating');
 
   try {
+    // Build the full config from all 3 layers
+    const config: ScriptGenConfig = {
+      primaryDocTexts,
+      feederScriptTexts: feederTexts,
+      niche: channel.niche,
+      format: channel.format,
+      length: channel.length,
+      characterCount: channel.character_count,
+      output: channel.output,
+      note: channel.note,
+    };
+
     // 1. Generate script text
     console.log(`[script] Generating script for "${cardName}"...`);
-    const scriptText = await generateScript(channel.master_prompt!, cardName);
+    const scriptText = await generateScript(config, cardName, model);
     console.log(`[script] Script generated: ${scriptText.length} chars`);
 
     // 2. Build .docx
@@ -138,11 +190,10 @@ async function processScriptCard(
     );
     console.log(`[script] Script uploaded to card "${cardName}": ${fileName}`);
 
-    // 4. Move card to voiceover source list (target)
-    if (channel.trello_list_ids.length > 0) {
-      const targetList = channel.trello_list_ids[0];
-      await trelloService.moveCardToList(cardId, targetList);
-      console.log(`[script] Card "${cardName}" moved to voiceover source list`);
+    // 4. Move card to target voiceover list
+    if (targetListId) {
+      await trelloService.moveCardToList(cardId, targetListId);
+      console.log(`[script] Card "${cardName}" moved to voiceover list ${targetListId}`);
     }
 
     // 5. Mark as pending — save script URL for UI
@@ -157,20 +208,105 @@ async function processScriptCard(
 }
 
 /**
- * Builds a .docx Buffer from script text.
- * Title as heading, then each paragraph of the script as body text.
+ * Fetches all primary instruction documents from the DB + Storage.
+ * These are global — shared across all channels.
  */
-async function buildDocx(title: string, scriptText: string): Promise<Buffer> {
-  const paragraphs: Paragraph[] = [
-    new Paragraph({
-      children: [
-        new TextRun({ text: title, bold: true, size: 32, font: 'Arial' }),
-      ],
-      spacing: { after: 300 },
-    }),
-  ];
+export async function fetchPrimaryDocTexts(): Promise<string[]> {
+  const { data: docs, error } = await supabase
+    .from('primary_documents')
+    .select('*')
+    .order('uploaded_at', { ascending: true });
 
-  // Split script into paragraphs and add each
+  if (error || !docs || docs.length === 0) {
+    if (error) console.error('[script] Failed to fetch primary documents:', error.message);
+    return [];
+  }
+
+  const texts: string[] = [];
+  for (const doc of docs as PrimaryDocument[]) {
+    try {
+      const { data, error: dlError } = await supabase.storage
+        .from(PRIMARY_DOCS_BUCKET)
+        .download(doc.storage_path);
+
+      if (dlError || !data) {
+        console.error(`[script] Failed to download primary doc "${doc.name}":`, dlError?.message);
+        continue;
+      }
+
+      const buffer = Buffer.from(await data.arrayBuffer());
+      const text = await extractText(buffer, doc.name);
+
+      if (text && text.trim().length > 0) {
+        texts.push(text.trim());
+      } else {
+        console.warn(`[script] Primary doc "${doc.name}" extracted empty text, skipping`);
+      }
+    } catch (err) {
+      console.error(`[script] Error processing primary doc "${doc.name}":`, err);
+    }
+  }
+
+  return texts;
+}
+
+/**
+ * Fetches the configured script generation model from app_settings.
+ */
+async function fetchScriptModel(): Promise<string | undefined> {
+  try {
+    const { data, error } = await supabase
+      .from('app_settings')
+      .select('value')
+      .eq('key', 'script_model')
+      .single();
+
+    if (error || !data) return undefined;
+    return data.value || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Downloads and extracts text from stored files (feeder scripts or any StoredFile[]).
+ */
+async function fetchStoredFileTexts(files: StoredFile[], bucket: string): Promise<string[]> {
+  const texts: string[] = [];
+
+  for (const file of files) {
+    try {
+      const { data, error } = await supabase.storage
+        .from(bucket)
+        .download(file.storage_path);
+
+      if (error || !data) {
+        console.error(`[script] Failed to download "${file.name}":`, error?.message);
+        continue;
+      }
+
+      const buffer = Buffer.from(await data.arrayBuffer());
+      const text = await extractText(buffer, file.name);
+
+      if (text && text.trim().length > 0) {
+        texts.push(text.trim());
+      } else {
+        console.warn(`[script] File "${file.name}" extracted empty text, skipping`);
+      }
+    } catch (err) {
+      console.error(`[script] Error processing file "${file.name}":`, err);
+    }
+  }
+
+  return texts;
+}
+
+/**
+ * Builds a .docx Buffer from script text.
+ */
+async function buildDocx(_title: string, scriptText: string): Promise<Buffer> {
+  const paragraphs: Paragraph[] = [];
+
   const lines = scriptText.split(/\n\n+/);
   for (const line of lines) {
     const trimmed = line.trim();
@@ -215,7 +351,6 @@ async function upsertCard(
     attachment_url: attachmentUrl ?? null,
     updated_at: new Date().toISOString(),
   };
-  // Only set script_url if explicitly provided (avoid overwriting on later calls)
   if (scriptUrl !== undefined) {
     record.script_url = scriptUrl ?? null;
   }

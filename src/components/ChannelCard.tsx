@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import type { ChannelStats, ProcessedCard, ProcessingStage } from '@/types';
+import type { Channel, ChannelStats, ProcessedCard, ProcessingStage, TitleListMappingResolved } from '@/types';
+import { ELEVENLABS_VOICES } from '@/data/elevenlabs-voices';
 
 interface Props {
   stats: ChannelStats;
@@ -11,11 +12,11 @@ interface Props {
 
 const STAGES: { key: ProcessingStage; label: string }[] = [
   { key: 'script_generating', label: 'Writing Script' },
-  { key: 'downloading', label: 'Downloading' },
-  { key: 'extracting', label: 'Extracting' },
-  { key: 'queued', label: 'In Queue' },
-  { key: 'generating', label: 'Generating' },
-  { key: 'uploading', label: 'Uploading' },
+  { key: 'downloading', label: 'Fetching Script' },
+  { key: 'extracting', label: 'Reading Script' },
+  { key: 'queued', label: 'Queued for Voice' },
+  { key: 'generating', label: 'Generating Audio' },
+  { key: 'uploading', label: 'Uploading to Trello' },
 ];
 
 export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
@@ -104,23 +105,12 @@ export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
             <div className="flex items-center gap-3.5 mt-2 flex-wrap">
               <InfoChip icon={<BoardIcon />} text={stats.boardName} />
               <InfoChip icon={<ListIcon />} text={stats.listNames.join(', ')} />
-              {stats.titleListName && (
-                <InfoChip icon={<PenIcon />} text={`Titles: ${stats.titleListName}`} />
+              {stats.titleListMappings.length > 0 && (
+                <InfoChip icon={<PenIcon />} text={`Titles: ${stats.titleListMappings.map((m) => m.titleListName).join(', ')}`} />
               )}
               <InfoChip icon={<ClockIcon />} text={ago(lastRun)} />
               {total > 0 && <InfoChip icon={<CheckCircleIcon />} text={`${successRate}% success`} />}
             </div>
-            {channel.master_prompt && (
-              <div className="mt-2">
-                <span
-                  className="text-[10px] font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1 uppercase tracking-wide"
-                  style={{ background: 'var(--accent-muted)', color: 'var(--accent-dark)' }}
-                >
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 2L2 7l10 5 10-5-10-5z" /><path d="M2 17l10 5 10-5" /><path d="M2 12l10 5 10-5" /></svg>
-                  AI Script Generation
-                </span>
-              </div>
-            )}
           </div>
 
           {/* Right: Actions */}
@@ -223,6 +213,9 @@ export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
             ))}
           </div>
         )}
+
+        {/* Config preview cards */}
+        <ConfigPreview channel={channel} titleListMappings={stats.titleListMappings} listNames={stats.listNames} boardName={stats.boardName} />
 
         {/* Stats row */}
         <div className="mt-5 grid grid-cols-4 gap-2.5">
@@ -567,6 +560,119 @@ function InfoChip({ icon, text }: { icon: React.ReactNode; text: string }) {
     <span className="flex items-center gap-1 text-[11px] font-medium" style={{ color: 'var(--text-muted)' }}>
       {icon}{text}
     </span>
+  );
+}
+
+function ConfigPreview({ channel, titleListMappings, listNames, boardName }: { channel: Channel; titleListMappings: TitleListMappingResolved[]; listNames: string[]; boardName: string }) {
+  const hasScript = titleListMappings.length > 0;
+  const hasVoice = !!channel.voice_config?.voiceId;
+
+  type CField = { label: string; value: string; pill?: boolean; mono?: boolean };
+
+  const scriptFields: CField[] = [];
+  for (const m of titleListMappings) {
+    scriptFields.push({ label: 'Source → Target', value: `${m.titleListName} → ${m.voiceoverListName}`, pill: true });
+  }
+  if (channel.niche) scriptFields.push({ label: 'Niche', value: channel.niche });
+  if (channel.format) scriptFields.push({ label: 'Format', value: channel.format });
+  if (channel.length) scriptFields.push({ label: 'Length', value: channel.length });
+  if (channel.character_count) scriptFields.push({ label: 'Characters', value: channel.character_count.toLocaleString() });
+  if (channel.output) scriptFields.push({ label: 'Output', value: channel.output });
+  if (channel.note) scriptFields.push({ label: 'Note', value: channel.note.length > 50 ? channel.note.slice(0, 50) + '...' : channel.note });
+  if (channel.feeder_scripts?.length > 0) scriptFields.push({ label: 'Feeder Scripts', value: `${channel.feeder_scripts.length} file${channel.feeder_scripts.length !== 1 ? 's' : ''}` });
+
+  const voiceFields: CField[] = [];
+  if (channel.voice_config) {
+    const vc = channel.voice_config;
+    // Look up voice name from the static catalog
+    const voiceEntry = ELEVENLABS_VOICES.find((v) => v.voice_id === vc.voiceId);
+    if (voiceEntry) {
+      voiceFields.push({ label: 'Voice', value: voiceEntry.name, pill: true });
+    }
+    voiceFields.push({ label: 'Voice ID', value: vc.voiceId.slice(0, 16) + (vc.voiceId.length > 16 ? '...' : ''), mono: true });
+    if (listNames.length > 0) voiceFields.push({ label: 'Source Lists', value: listNames.join(', ') });
+    voiceFields.push({ label: 'Speed', value: `${vc.speed.toFixed(1)}x` });
+    voiceFields.push({ label: 'Pitch', value: vc.pitch.toFixed(2) });
+    voiceFields.push({ label: 'Stability', value: vc.stability.toFixed(2) });
+    if (vc.style > 0) voiceFields.push({ label: 'Style', value: vc.style.toFixed(2) });
+  }
+
+  if (!hasScript && !hasVoice) return null;
+
+  return (
+    <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <ConfigCard
+        icon={<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>}
+        title="Script Generation"
+        fields={scriptFields}
+        headerBg="#eef2ff" headerColor="#4f46e5" pillBg="#e0e7ff" pillColor="#3730a3"
+      />
+      <ConfigCard
+        icon={<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /></svg>}
+        title="Voice Config"
+        fields={voiceFields}
+        headerBg="#ecfdf5" headerColor="#047857" pillBg="#d1fae5" pillColor="#065f46"
+      />
+    </div>
+  );
+}
+
+function ConfigCard({ icon, title, fields, headerBg, headerColor, pillBg, pillColor }: {
+  icon: React.ReactNode; title: string;
+  fields: { label: string; value: string; pill?: boolean; mono?: boolean }[];
+  headerBg: string; headerColor: string; pillBg: string; pillColor: string;
+}) {
+  const truncStyle: React.CSSProperties = {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+    minWidth: 0,
+  };
+
+  return (
+    <div style={{ borderRadius: 12, overflow: 'hidden', border: '1px solid var(--border-light)', minWidth: 0 }}>
+      <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8, background: headerBg }}>
+        <span style={{ color: headerColor }}>{icon}</span>
+        <span style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.05em', color: headerColor }}>
+          {title}
+        </span>
+      </div>
+      <div style={{ padding: '12px 14px', background: '#fff', overflow: 'hidden' }}>
+        {fields.length > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {fields.map((f) => (
+              <div key={f.label} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, minWidth: 0 }}>
+                <span style={{ fontSize: 10, fontWeight: 600, color: '#8b8fa3', flexShrink: 0 }}>
+                  {f.label}
+                </span>
+                {f.pill ? (
+                  <span
+                    style={{
+                      fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 6,
+                      background: pillBg, color: pillColor, ...truncStyle,
+                    }}
+                  >
+                    {f.value}
+                  </span>
+                ) : (
+                  <span
+                    style={{
+                      fontSize: f.mono ? 10 : 11, fontWeight: 600, textAlign: 'right',
+                      color: '#1e1e2e', fontFamily: f.mono ? 'monospace' : 'inherit',
+                      ...truncStyle,
+                    }}
+                  >
+                    {f.value}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p style={{ fontSize: 10, fontStyle: 'italic', color: 'var(--text-muted)' }}>Not configured</p>
+        )}
+      </div>
+    </div>
   );
 }
 

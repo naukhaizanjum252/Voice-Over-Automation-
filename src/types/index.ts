@@ -1,14 +1,47 @@
 // ── Database Types ──
 
+/** A file uploaded to Supabase Storage (used for feeder scripts and primary docs) */
+export interface StoredFile {
+  name: string;        // original filename
+  storage_path: string; // path in Supabase Storage bucket
+  size: number;         // file size in bytes
+  uploaded_at: string;  // ISO timestamp
+}
+
+/** @deprecated Use StoredFile instead */
+export type CompetitorScript = StoredFile;
+
+/** Global primary instruction documents (shared across all channels) */
+export interface PrimaryDocument {
+  id: string;
+  name: string;
+  storage_path: string;
+  size: number;
+  uploaded_at: string;
+}
+
+/** Maps a title source list to its target voiceover list */
+export interface TitleListMapping {
+  titleListId: string;
+  voiceoverListId: string;
+}
+
 export interface Channel {
   id: string;
   name: string;
   trello_board_id: string;
   trello_list_ids: string[];
-  trello_title_list_id: string | null;
+  title_list_mappings: TitleListMapping[];
   auto_run_enabled: boolean;
   voice_config: VoiceConfig;
-  master_prompt: string | null;
+  // Script generation fields (all optional per channel)
+  niche: string | null;
+  format: string | null;
+  length: string | null;
+  character_count: number | null;
+  output: string | null;
+  note: string | null;
+  feeder_scripts: StoredFile[];
   created_at: string;
 }
 
@@ -69,11 +102,19 @@ export interface TrelloAttachment {
 
 // ── API Types ──
 
+/** Resolved name pair for a title list mapping */
+export interface TitleListMappingResolved {
+  titleListId: string;
+  titleListName: string;
+  voiceoverListId: string;
+  voiceoverListName: string;
+}
+
 export interface ChannelStats {
   channel: Channel;
   boardName: string;
   listNames: string[];
-  titleListName: string | null;
+  titleListMappings: TitleListMappingResolved[];
   total: number;
   completed: number;
   failed: number;

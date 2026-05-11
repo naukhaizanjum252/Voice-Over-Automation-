@@ -22,11 +22,14 @@ export async function POST() {
     }
 
     // Phase 1: Generate scripts for all channels with title lists
+    // Fetch primary docs once for all channels
+    const { fetchPrimaryDocTexts } = await import('@/services/scriptProcessingService');
+    const primaryDocTexts = await fetchPrimaryDocTexts();
     const scriptResults = [];
     for (const channel of channels) {
       const ch = channel as Channel;
-      if (ch.trello_title_list_id && ch.master_prompt) {
-        const results = await processChannelScripts(ch);
+      if (ch.title_list_mappings && ch.title_list_mappings.length > 0) {
+        const results = await processChannelScripts(ch, primaryDocTexts);
         scriptResults.push(...results);
       }
     }

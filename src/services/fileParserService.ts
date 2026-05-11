@@ -12,6 +12,7 @@ export async function extractText(
 
   switch (ext) {
     case 'txt':
+    case 'md':
       return cleanText(buffer.toString('utf-8'));
 
     case 'doc':

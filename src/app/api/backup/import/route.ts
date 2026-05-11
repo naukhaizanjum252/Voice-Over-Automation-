@@ -19,10 +19,16 @@ export async function POST(request: Request) {
           name: row.name,
           trello_board_id: row.trello_board_id,
           trello_list_ids: parseJsonField(row.trello_list_ids, []),
-          trello_title_list_id: row.trello_title_list_id || null,
+          title_list_mappings: parseJsonField(row.title_list_mappings, []),
           auto_run_enabled: row.auto_run_enabled === 'true',
           voice_config: parseJsonField(row.voice_config, {}),
-          master_prompt: row.master_prompt || null,
+          niche: row.niche || null,
+          format: row.format || null,
+          length: row.length || null,
+          character_count: row.character_count ? parseInt(row.character_count, 10) : null,
+          output: row.output || null,
+          note: row.note || null,
+          feeder_scripts: parseJsonField(row.feeder_scripts, []),
           created_at: row.created_at || new Date().toISOString(),
         };
 
