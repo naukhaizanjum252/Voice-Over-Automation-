@@ -131,6 +131,11 @@ function buildSystemPrompt(config: ScriptGenConfig): string {
     );
   }
 
+  // Hard constraint reminder
+  sections.push(
+    `<critical_rules>\n- If a character count is specified, it is a HARD LIMIT. You must produce a script that is within 5% below the target and never exceeds it. This is non-negotiable.\n- Output ONLY the script text. No titles, no headings, no metadata.\n</critical_rules>`
+  );
+
   return sections.join("\n\n");
 }
 
@@ -155,7 +160,7 @@ function buildUserPrompt(config: ScriptGenConfig, cardTitle: string): string {
     lines.push(`Length: ${config.length}`);
   }
   if (config.characterCount) {
-    lines.push(`Characters: ${config.characterCount.toLocaleString()}`);
+    lines.push(`Character count: EXACTLY ${config.characterCount.toLocaleString()} characters (this is a HARD LIMIT — the script MUST be between ${Math.round(config.characterCount * 0.95).toLocaleString()} and ${config.characterCount.toLocaleString()} characters including spaces. Do NOT exceed this limit and do NOT fall significantly short. Count carefully.)`);
   }
   if (config.output) {
     lines.push(`Output: ${config.output}`);
