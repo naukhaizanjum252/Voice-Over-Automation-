@@ -124,7 +124,7 @@ export async function processChannelScripts(
         .eq('trello_card_id', card.id)
         .single();
 
-      if (existing && (existing.status === 'processing' || existing.status === 'completed' || existing.status === 'pending' || existing.status === 'failed')) {
+      if (existing && (existing.status === 'processing' || existing.status === 'completed' || existing.status === 'failed')) {
         console.log(`[script] Card "${card.name}" already ${existing.status}, skipping`);
         continue;
       }

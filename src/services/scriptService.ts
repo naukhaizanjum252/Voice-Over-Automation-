@@ -114,12 +114,17 @@ export async function generateScript(
         const direction = diff > 0 ? "too long" : "too short";
         const absDiff = Math.abs(diff);
 
+        // Ask Claude to overshoot the correction — it consistently under-delivers.
+        // Removals need a higher multiplier (Claude is more conservative when cutting).
+        const multiplier = direction === "too long" ? 2.0 : 1.5;
+        const adjustedDiff = Math.round(absDiff * multiplier);
+
         console.log(
-          `[scriptService] Correction pass ${pass}/${MAX_CORRECTION_PASSES}: ${currentLen} chars is ${direction} by ${absDiff} (target: ${target})`,
+          `[scriptService] Correction pass ${pass}/${MAX_CORRECTION_PASSES}: ${currentLen} chars is ${direction} by ${absDiff} (target: ${target}, asking for ${adjustedDiff})`,
         );
 
-        // Build correction prompt
-        const correctionPrompt = buildCorrectionPrompt(currentLen, target, direction, absDiff);
+        // Build correction prompt with inflated diff
+        const correctionPrompt = buildCorrectionPrompt(currentLen, target, direction, adjustedDiff);
         messages.push({ role: "user", content: correctionPrompt });
 
         const correctionMessage = await client.messages.create({
