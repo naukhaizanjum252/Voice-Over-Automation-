@@ -23,7 +23,6 @@ const BASE = 'https://69labs.vip/api/v1';
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 3000;
 const TTS_POLL_INTERVAL_MS = 5000;
-const TTS_POLL_MAX_ATTEMPTS = 24; // ~2 min max wait
 
 function apiHeaders(): Record<string, string> {
   return {
@@ -192,9 +191,13 @@ async function pollAndDownload(
 ): Promise<Buffer> {
   let lastState = '';
   let notifiedGenerating = false;
+  let pollCount = 0;
 
-  for (let i = 0; i < TTS_POLL_MAX_ATTEMPTS; i++) {
+  // Poll indefinitely until the TTS provider returns a terminal status.
+  // Vercel's maxDuration or user cancellation will stop us if needed.
+  while (true) {
     await sleep(TTS_POLL_INTERVAL_MS);
+    pollCount++;
 
     // Check for cancellation after sleep (catches abort during wait)
     if (cancelSignal?.aborted) {
@@ -209,7 +212,7 @@ async function pollAndDownload(
       });
     } catch (fetchErr) {
       if (cancelSignal?.aborted) throw new Error('Terminated by user');
-      console.error(`[voiceService] Poll fetch error (attempt ${i + 1}):`, fetchErr);
+      console.error(`[voiceService] Poll fetch error (attempt ${pollCount}):`, fetchErr);
       continue; // network glitch, keep polling
     }
 
@@ -233,7 +236,7 @@ async function pollAndDownload(
     const queuePos = status.queuePosition;
 
     // Log on first poll or state change
-    if (state !== lastState || i === 0) {
+    if (state !== lastState || pollCount === 1) {
       const queueInfo = queuePos != null ? ` (queue #${queuePos})` : '';
       console.log(`[voiceService] Job ${jobId} state: "${state}"${queueInfo} | startedAt: ${status.startedAt ?? 'null'}`);
       lastState = state;
@@ -272,18 +275,7 @@ async function pollAndDownload(
     if (stateLower) {
       console.warn(`[voiceService] Job ${jobId} unknown state: "${state}" — continuing to poll`);
     }
-
-    // If state is empty after 30 seconds, something's wrong
-    if (!stateLower && i >= 6) {
-      throw new Error(
-        `TTS job ${jobId} returned empty status after ${i * TTS_POLL_INTERVAL_MS / 1000}s. Response: ${JSON.stringify(status).slice(0, 300)}`
-      );
-    }
   }
-
-  throw new Error(
-    `TTS job ${jobId} timed out after ${TTS_POLL_MAX_ATTEMPTS * TTS_POLL_INTERVAL_MS / 1000}s. Last state: "${lastState}"`
-  );
 }
 
 /** Download finished TTS audio by job ID. */

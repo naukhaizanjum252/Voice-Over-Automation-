@@ -17,7 +17,6 @@ import type { VoiceConfig } from '@/types';
 
 const BASE = 'https://api.ai84.pro';
 const POLL_INTERVAL_MS = 5000;
-const POLL_MAX_ATTEMPTS = 60; // ~5 min max wait
 
 /**
  * Hardcoded ElevenLabs → AI84 cloned voice name mapping.
@@ -307,9 +306,12 @@ async function pollAndDownload(
 ): Promise<Buffer> {
   let lastStatus = '';
   let notifiedGenerating = false;
+  let pollCount = 0;
 
-  for (let i = 0; i < POLL_MAX_ATTEMPTS; i++) {
+  // Poll indefinitely until the TTS provider returns a terminal status.
+  while (true) {
     await sleep(POLL_INTERVAL_MS);
+    pollCount++;
 
     // Check for cancellation after sleep (catches abort during wait)
     if (cancelSignal?.aborted) {
@@ -327,7 +329,7 @@ async function pollAndDownload(
       );
     } catch (fetchErr) {
       if (cancelSignal?.aborted) throw new Error('Terminated by user');
-      console.error(`[ai84] Poll fetch error (attempt ${i + 1}):`, fetchErr);
+      console.error(`[ai84] Poll fetch error (attempt ${pollCount}):`, fetchErr);
       continue; // network glitch, keep polling
     }
 
@@ -342,7 +344,7 @@ async function pollAndDownload(
     const status = ((job.status ?? data.status ?? '') as string);
     const statusLower = status.toLowerCase();
 
-    if (status !== lastStatus || i === 0) {
+    if (status !== lastStatus || pollCount === 1) {
       const queuePos = job.queue_position != null ? ` (queue #${job.queue_position})` : '';
       const progress = job.progress != null ? ` progress: ${job.progress}%` : '';
       console.log(`[ai84] Job ${jobId} status: "${status}"${queuePos}${progress}`);
@@ -377,10 +379,6 @@ async function pollAndDownload(
 
     // queued / processing / running — keep polling
   }
-
-  throw new Error(
-    `AI84 TTS job ${jobId} timed out after ${POLL_MAX_ATTEMPTS * POLL_INTERVAL_MS / 1000}s. Last status: "${lastStatus}"`
-  );
 }
 
 /** Download audio from a URL. */
