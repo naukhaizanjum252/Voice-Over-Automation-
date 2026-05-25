@@ -10,18 +10,20 @@ interface Props {
   onEdit?: (channelId: string) => void;
 }
 
-// Script flow: title → generate script → upload script → generate voice → upload voice
+// Script flow: title → generate script → upload script → queue → generate voice → upload voice
 const SCRIPT_STAGES: { key: ProcessingStage; label: string }[] = [
   { key: 'script_generating', label: 'Generating Script' },
   { key: 'script_uploading', label: 'Uploading Script' },
+  { key: 'queued', label: 'In Queue' },
   { key: 'generating', label: 'Generating Voice' },
   { key: 'uploading', label: 'Uploading Voice' },
 ];
 
-// Voiceover-only flow: detect script → extract → generate voice → upload voice
+// Voiceover-only flow: detect script → extract → queue → generate voice → upload voice
 const VOICE_STAGES: { key: ProcessingStage; label: string }[] = [
   { key: 'downloading', label: 'Fetching Script' },
   { key: 'extracting', label: 'Reading Script' },
+  { key: 'queued', label: 'In Queue' },
   { key: 'generating', label: 'Generating Voice' },
   { key: 'uploading', label: 'Uploading Voice' },
 ];

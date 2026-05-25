@@ -7,8 +7,35 @@ import { Document, Packer, Paragraph, TextRun } from 'docx';
 
 const FEEDER_SCRIPTS_BUCKET = 'feeder-scripts';
 const PRIMARY_DOCS_BUCKET = 'primary-documents';
-const CONCURRENCY_LIMIT = 5;
 const STALE_SCRIPT_MINUTES = 10; // Cards stuck in script generation longer than this are reset
+const CONCURRENCY_LIMIT = 6;
+
+/**
+ * Runs tasks concurrently with a max concurrency limit.
+ */
+async function runWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  const executing: Promise<void>[] = [];
+
+  for (const item of items) {
+    const p = fn(item).then((result) => {
+      results.push(result);
+    });
+    executing.push(p as unknown as Promise<void>);
+
+    if (executing.length >= limit) {
+      await Promise.race(executing);
+      // Remove settled promises
+      for (let i = executing.length - 1; i >= 0; i--) {
+        const settled = await Promise.race([executing[i].then(() => true), Promise.resolve(false)]);
+        if (settled) executing.splice(i, 1);
+      }
+    }
+  }
+
+  await Promise.all(executing);
+  return results;
+}
 
 /**
  * Script Generation Pipeline
@@ -24,7 +51,8 @@ const STALE_SCRIPT_MINUTES = 10; // Cards stuck in script generation longer than
 /**
  * Recovers cards stuck in "processing" during script generation.
  * If a card has been in processing with a script_generating/script_uploading stage
- * for longer than STALE_SCRIPT_MINUTES, reset it to failed so the user can retry.
+ * for longer than STALE_SCRIPT_MINUTES, delete the DB record so it gets retried
+ * from scratch on the next cron run (Phase 1 checks Trello for script attachment first).
  */
 async function recoverStaleScriptJobs(): Promise<number> {
   const cutoff = new Date(Date.now() - STALE_SCRIPT_MINUTES * 60 * 1000).toISOString();
@@ -47,20 +75,15 @@ async function recoverStaleScriptJobs(): Promise<number> {
 
   for (const card of staleCards) {
     const staleMins = Math.round((Date.now() - new Date(card.updated_at).getTime()) / 60000);
-    console.log(`[script-stale] Resetting card "${card.card_name}" (stuck at ${card.processing_stage} for ${staleMins}min) → failed`);
+    console.log(`[script-stale] Deleting stale record for "${card.card_name}" (stuck at ${card.processing_stage} for ${staleMins}min) → will retry`);
 
-    const { error: updateError } = await supabase
+    const { error: deleteError } = await supabase
       .from('processed_cards')
-      .update({
-        status: 'failed',
-        processing_stage: null,
-        error_message: `Script generation timed out (stuck for ${staleMins}min)`,
-        updated_at: new Date().toISOString(),
-      })
+      .delete()
       .eq('id', card.id);
 
-    if (updateError) {
-      console.error(`[script-stale] Failed to reset card ${card.id}:`, updateError.message);
+    if (deleteError) {
+      console.error(`[script-stale] Failed to delete card ${card.id}:`, deleteError.message);
     }
   }
 
@@ -135,8 +158,6 @@ export async function processChannelScripts(
     return [];
   }
 
-  const results: ProcessingResult[] = [];
-
   // Pre-fetch feeder script texts once per channel run
   let feederTexts: string[] | undefined;
   if (channel.feeder_scripts && channel.feeder_scripts.length > 0) {
@@ -185,23 +206,20 @@ export async function processChannelScripts(
     }
   }
 
-  if (eligibleCards.length === 0) return results;
+  if (eligibleCards.length === 0) return [];
 
-  console.log(`[script] Processing ${eligibleCards.length} cards in parallel (concurrency: ${CONCURRENCY_LIMIT}) for channel "${channel.name}"`);
+  console.log(`[script] Processing ${eligibleCards.length} cards for channel "${channel.name}"`);
 
-  // Process eligible cards in parallel with concurrency limit
-  const tasks = eligibleCards.map((card) => async () => {
+  // Process cards concurrently (up to CONCURRENCY_LIMIT at a time)
+  const results = await runWithConcurrency(eligibleCards, CONCURRENCY_LIMIT, async (card) => {
     try {
       return await processScriptCard(card.cardId, card.cardName, channel, primaryDocTexts, feederTexts, card.targetListId, model);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[script] Card ${card.cardId} error:`, errMsg);
-      return { cardId: card.cardId, cardName: card.cardName, success: false, error: errMsg } as ProcessingResult;
+      return { cardId: card.cardId, cardName: card.cardName, success: false, error: errMsg };
     }
   });
-
-  const parallelResults = await runWithConcurrency(tasks, CONCURRENCY_LIMIT);
-  results.push(...parallelResults);
 
   return results;
 }
@@ -393,27 +411,6 @@ async function buildDocx(_title: string, scriptText: string): Promise<Buffer> {
 
   const uint8 = await Packer.toBuffer(doc);
   return Buffer.from(uint8);
-}
-
-// ── Concurrency ──
-
-async function runWithConcurrency<T>(
-  tasks: (() => Promise<T>)[],
-  limit: number
-): Promise<T[]> {
-  const results: T[] = [];
-  let index = 0;
-
-  async function worker() {
-    while (index < tasks.length) {
-      const current = index++;
-      results[current] = await tasks[current]();
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker());
-  await Promise.all(workers);
-  return results;
 }
 
 // ── Helpers ──

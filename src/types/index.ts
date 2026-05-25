@@ -63,6 +63,7 @@ export interface ProcessedCard {
   error_message: string | null;
   script_url: string | null;
   attachment_url: string | null;
+  retry_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -76,6 +77,7 @@ export type ProcessingStage =
   | 'downloading'          // Downloading script from Trello
   | 'extracting'           // Extracting text from script file
   // Shared stages (both flows)
+  | 'queued'              // TTS job queued, waiting for processing
   | 'generating'           // Generating voiceover audio
   | 'uploading';           // Uploading voiceover to Trello
 

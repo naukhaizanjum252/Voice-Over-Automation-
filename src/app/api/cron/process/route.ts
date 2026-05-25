@@ -7,7 +7,7 @@ import { processAllScripts } from '@/services/scriptProcessingService';
 export const dynamic = 'force-dynamic';
 
 const LOCK_NAME = 'cron_process';
-const LOCK_STALE_MINUTES = 30; // Force-release lock after this long (crash recovery)
+const LOCK_STALE_MINUTES = 8; // Force-release lock after this long (crash recovery — just over one cron interval)
 
 /**
  * Acquires a distributed lock via Supabase.

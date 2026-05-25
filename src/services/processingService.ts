@@ -4,8 +4,35 @@ import * as trelloService from './trelloService';
 import { extractText } from './fileParserService';
 import { generateAudio } from './voiceService';
 
-const CONCURRENCY_LIMIT = 5;
 const STALE_PROCESSING_MINUTES = 15; // Cards stuck in "processing" longer than this are auto-reset
+const CONCURRENCY_LIMIT = 6;
+
+/**
+ * Runs tasks concurrently with a max concurrency limit.
+ */
+async function runWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  const executing: Promise<void>[] = [];
+
+  for (const item of items) {
+    const p = fn(item).then((result) => {
+      results.push(result);
+    });
+    executing.push(p as unknown as Promise<void>);
+
+    if (executing.length >= limit) {
+      await Promise.race(executing);
+      // Remove settled promises
+      for (let i = executing.length - 1; i >= 0; i--) {
+        const settled = await Promise.race([executing[i].then(() => true), Promise.resolve(false)]);
+        if (settled) executing.splice(i, 1);
+      }
+    }
+  }
+
+  await Promise.all(executing);
+  return results;
+}
 
 // ── Cancellation registry ──
 // Maps trello_card_id → AbortController for in-progress cards.
@@ -33,14 +60,19 @@ export function cancelCardProcess(trelloCardId: string): boolean {
  * Recovers cards stuck in "processing" state.
  * If a card has been processing for longer than STALE_PROCESSING_MINUTES,
  * it means the process that was handling it crashed/timed out.
- * Resets them to "pending" so they get reprocessed in the current cron run.
+ *
+ * Uses retry_count to prevent infinite loops:
+ * - retry_count < MAX_AUTO_RETRIES → reset to "pending" for auto-retry
+ * - retry_count >= MAX_AUTO_RETRIES → mark as "failed" permanently
  */
+const MAX_AUTO_RETRIES = 2;
+
 export async function recoverStaleJobs(): Promise<number> {
   const cutoff = new Date(Date.now() - STALE_PROCESSING_MINUTES * 60 * 1000).toISOString();
 
   const { data: staleCards, error: fetchError } = await supabase
     .from('processed_cards')
-    .select('id, trello_card_id, card_name, updated_at')
+    .select('id, trello_card_id, card_name, updated_at, retry_count')
     .eq('status', 'processing')
     .lt('updated_at', cutoff);
 
@@ -55,20 +87,41 @@ export async function recoverStaleJobs(): Promise<number> {
 
   for (const card of staleCards) {
     const staleMins = Math.round((Date.now() - new Date(card.updated_at).getTime()) / 60000);
-    console.log(`[stale-recovery] Resetting card "${card.card_name}" (stuck for ${staleMins}min) → pending for reprocessing`);
+    const retryCount = (card.retry_count || 0) + 1;
 
-    const { error: updateError } = await supabase
-      .from('processed_cards')
-      .update({
-        status: 'pending',
-        processing_stage: null,
-        error_message: null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', card.id);
+    if (retryCount > MAX_AUTO_RETRIES) {
+      // Too many retries — mark as permanently failed
+      console.log(`[stale-recovery] Card "${card.card_name}" failed after ${retryCount - 1} retries (stuck for ${staleMins}min) → failed`);
+      const { error: updateError } = await supabase
+        .from('processed_cards')
+        .update({
+          status: 'failed',
+          processing_stage: null,
+          error_message: `Voiceover generation timed out after ${retryCount - 1} attempts`,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', card.id);
 
-    if (updateError) {
-      console.error(`[stale-recovery] Failed to reset card ${card.id}:`, updateError.message);
+      if (updateError) {
+        console.error(`[stale-recovery] Failed to update card ${card.id}:`, updateError.message);
+      }
+    } else {
+      // Still have retries left — reset to pending
+      console.log(`[stale-recovery] Resetting card "${card.card_name}" (stuck for ${staleMins}min, retry ${retryCount}/${MAX_AUTO_RETRIES}) → pending`);
+      const { error: updateError } = await supabase
+        .from('processed_cards')
+        .update({
+          status: 'pending',
+          processing_stage: null,
+          error_message: null,
+          retry_count: retryCount,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', card.id);
+
+      if (updateError) {
+        console.error(`[stale-recovery] Failed to reset card ${card.id}:`, updateError.message);
+      }
     }
   }
 
@@ -76,30 +129,7 @@ export async function recoverStaleJobs(): Promise<number> {
 }
 
 /**
- * Runs async tasks with a concurrency limit.
- */
-async function runWithConcurrency<T>(
-  tasks: (() => Promise<T>)[],
-  limit: number
-): Promise<T[]> {
-  const results: T[] = [];
-  let index = 0;
-
-  async function worker() {
-    while (index < tasks.length) {
-      const current = index++;
-      results[current] = await tasks[current]();
-    }
-  }
-
-  const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker());
-  await Promise.all(workers);
-  return results;
-}
-
-/**
  * Processes all active channels. Called by cron or manual trigger.
- * Channels are processed in parallel (up to CONCURRENCY_LIMIT).
  */
 export async function processAllChannels(): Promise<ProcessingResult[]> {
   // Step 0: Recover any cards stuck in "processing" from crashed runs
@@ -122,14 +152,17 @@ export async function processAllChannels(): Promise<ProcessingResult[]> {
     return [];
   }
 
-  const tasks = channels.map((channel) => () => processChannel(channel as Channel));
-  const channelResults = await runWithConcurrency(tasks, CONCURRENCY_LIMIT);
-  return channelResults.flat();
+  const results: ProcessingResult[] = [];
+  for (const channel of channels) {
+    const channelResults = await processChannel(channel as Channel);
+    results.push(...channelResults);
+  }
+  return results;
 }
 
 /**
  * Processes a single channel: fetches cards, extracts scripts, generates audio.
- * Cards within a channel are processed in parallel (up to CONCURRENCY_LIMIT).
+ * Cards are processed concurrently (up to CONCURRENCY_LIMIT at a time).
  */
 export async function processChannel(
   channel: Channel
@@ -147,18 +180,17 @@ export async function processChannel(
 
   if (allCards.length === 0) return [];
 
-  // Process cards in parallel with concurrency limit
-  const tasks = allCards.map((card) => async () => {
+  // Process cards concurrently (up to CONCURRENCY_LIMIT at a time)
+  const results = await runWithConcurrency(allCards, CONCURRENCY_LIMIT, async (card) => {
     try {
       return await processCard(card, channel);
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[processing] Card ${card.id} error:`, errMsg);
-      return { cardId: card.id, cardName: card.name, success: false, error: errMsg } as ProcessingResult;
+      return { cardId: card.id, cardName: card.name, success: false, error: errMsg };
     }
   });
-
-  return runWithConcurrency(tasks, CONCURRENCY_LIMIT);
+  return results;
 }
 
 /**
@@ -168,18 +200,7 @@ async function processCard(
   card: TrelloCard,
   channel: Channel
 ): Promise<ProcessingResult> {
-  // Check if already processed
-  const { data: existing } = await supabase
-    .from('processed_cards')
-    .select('id, status')
-    .eq('trello_card_id', card.id)
-    .single();
-
-  if (existing && (existing.status === 'completed' || existing.status === 'processing' || existing.status === 'failed')) {
-    return { cardId: card.id, cardName: card.name, success: true };
-  }
-
-  // Skip cards that already have audio attached — mark as completed
+  // Skip cards that already have audio attached
   if (trelloService.hasAudioAttachment(card.attachments || [])) {
     await upsertCard(card.id, card.name, channel.id, 'completed', 'Skipped — voiceover already attached', null, null);
     return { cardId: card.id, cardName: card.name, success: true };
@@ -189,20 +210,63 @@ async function processCard(
   const attachment = trelloService.getScriptAttachment(card.attachments || []);
   if (!attachment) {
     console.log(`[processing] Card "${card.name}" has no script attachment, skipping`);
-    // If card was pending (script phase said it was done), mark as failed — something went wrong
-    if (existing && existing.status === 'pending') {
-      await upsertCard(card.id, card.name, channel.id, 'failed', 'No script attachment found on card', null, null);
-      return { cardId: card.id, cardName: card.name, success: false, error: 'No script attachment found' };
-    }
-    return { cardId: card.id, cardName: card.name, success: true }; // skip silently for new cards
+    return { cardId: card.id, cardName: card.name, success: true };
   }
 
-  // Create an AbortController for this card so it can be cancelled
+  // Atomically claim this card — only proceed if status is 'pending' or no record exists.
+  const { data: existing } = await supabase
+    .from('processed_cards')
+    .select('id, status')
+    .eq('trello_card_id', card.id)
+    .single();
+
+  if (existing) {
+    if (existing.status === 'completed' || existing.status === 'processing' || existing.status === 'failed') {
+      return { cardId: card.id, cardName: card.name, success: true };
+    }
+    // Card is 'pending' — atomically claim it with conditional update
+    const { data: claimed } = await supabase
+      .from('processed_cards')
+      .update({
+        status: 'processing',
+        processing_stage: 'downloading',
+        error_message: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('trello_card_id', card.id)
+      .eq('status', 'pending')
+      .select('id');
+
+    if (!claimed || claimed.length === 0) {
+      console.log(`[processing] Card "${card.name}" was claimed by another process, skipping`);
+      return { cardId: card.id, cardName: card.name, success: true };
+    }
+  } else {
+    // No record — insert to claim (unique constraint prevents duplicates)
+    const { error: insertErr } = await supabase
+      .from('processed_cards')
+      .insert({
+        trello_card_id: card.id,
+        card_name: card.name,
+        channel_id: channel.id,
+        status: 'processing',
+        processing_stage: 'downloading',
+        updated_at: new Date().toISOString(),
+      });
+
+    if (insertErr) {
+      if (insertErr.code === '23505') {
+        console.log(`[processing] Card "${card.name}" already claimed, skipping`);
+        return { cardId: card.id, cardName: card.name, success: true };
+      }
+      return { cardId: card.id, cardName: card.name, success: false, error: insertErr.message };
+    }
+  }
+
+  // Card is now claimed (status = processing, stage = downloading).
+  // Create an AbortController so it can be cancelled.
   const abortController = new AbortController();
   activeControllers.set(card.id, abortController);
-
-  // Upsert as processing — stage: downloading
-  await upsertCard(card.id, card.name, channel.id, 'processing', null, null, 'downloading');
 
   try {
     // 1. Download attachment
@@ -225,7 +289,7 @@ async function processCard(
     await updateStage(card.id, 'generating');
     console.log(`[processing] Generating audio for ${text.length} chars`);
     const finalAudio = await generateAudio(text, channel.voice_config, async (stage) => {
-      await updateStage(card.id, stage === 'generating' ? 'generating' : 'generating');
+      await updateStage(card.id, stage === 'queued' ? 'queued' : 'generating');
     }, abortController.signal);
     console.log(`[processing] Audio ready: ${(finalAudio.length / 1024 / 1024).toFixed(2)} MB`);
 
