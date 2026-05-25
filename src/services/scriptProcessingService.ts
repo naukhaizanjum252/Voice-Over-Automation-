@@ -1,14 +1,14 @@
 import { supabase } from '@/lib/supabase';
-import type { Channel, StoredFile, PrimaryDocument, ProcessingResult, TitleListMapping } from '@/types';
+import type { Channel, StoredFile, PrimaryDocument, ProcessingResult } from '@/types';
 import * as trelloService from './trelloService';
 import { generateScript, type ScriptGenConfig } from './scriptService';
-import { generateAudio } from './voiceService';
 import { extractText } from './fileParserService';
 import { Document, Packer, Paragraph, TextRun } from 'docx';
 
 const FEEDER_SCRIPTS_BUCKET = 'feeder-scripts';
 const PRIMARY_DOCS_BUCKET = 'primary-documents';
 const CONCURRENCY_LIMIT = 5;
+const STALE_SCRIPT_MINUTES = 10; // Cards stuck in script generation longer than this are reset
 
 /**
  * Script Generation Pipeline
@@ -22,10 +22,62 @@ const CONCURRENCY_LIMIT = 5;
  */
 
 /**
+ * Recovers cards stuck in "processing" during script generation.
+ * If a card has been in processing with a script_generating/script_uploading stage
+ * for longer than STALE_SCRIPT_MINUTES, reset it to failed so the user can retry.
+ */
+async function recoverStaleScriptJobs(): Promise<number> {
+  const cutoff = new Date(Date.now() - STALE_SCRIPT_MINUTES * 60 * 1000).toISOString();
+
+  const { data: staleCards, error: fetchError } = await supabase
+    .from('processed_cards')
+    .select('id, trello_card_id, card_name, processing_stage, updated_at')
+    .eq('status', 'processing')
+    .in('processing_stage', ['script_generating', 'script_uploading'])
+    .lt('updated_at', cutoff);
+
+  if (fetchError) {
+    console.error('[script-stale] Failed to query stale script jobs:', fetchError.message);
+    return 0;
+  }
+
+  if (!staleCards || staleCards.length === 0) return 0;
+
+  console.log(`[script-stale] Found ${staleCards.length} stale script jobs (>${STALE_SCRIPT_MINUTES}min old)`);
+
+  for (const card of staleCards) {
+    const staleMins = Math.round((Date.now() - new Date(card.updated_at).getTime()) / 60000);
+    console.log(`[script-stale] Resetting card "${card.card_name}" (stuck at ${card.processing_stage} for ${staleMins}min) → failed`);
+
+    const { error: updateError } = await supabase
+      .from('processed_cards')
+      .update({
+        status: 'failed',
+        processing_stage: null,
+        error_message: `Script generation timed out (stuck for ${staleMins}min)`,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', card.id);
+
+    if (updateError) {
+      console.error(`[script-stale] Failed to reset card ${card.id}:`, updateError.message);
+    }
+  }
+
+  return staleCards.length;
+}
+
+/**
  * Processes all channels that have script generation enabled.
  * A channel qualifies when it has at least one title_list_mapping.
  */
 export async function processAllScripts(): Promise<ProcessingResult[]> {
+  // Recover any script jobs stuck from crashed/timed-out runs
+  const recovered = await recoverStaleScriptJobs();
+  if (recovered > 0) {
+    console.log(`[script-cron] Recovered ${recovered} stale script jobs.`);
+  }
+
   console.log('[script-cron] Fetching channels with script generation...');
   const { data: channels, error } = await supabase
     .from('channels')
@@ -155,12 +207,13 @@ export async function processChannelScripts(
 }
 
 /**
- * Generates a script for a single card:
+ * Generates a script for a single card (Phase 1 only — no voiceover):
  * 1. Build config from primary docs + feeder scripts + channel template fields
  * 2. Generate script using Claude
  * 3. Create .docx file from the script text
  * 4. Upload .docx to the card
  * 5. Move card to the target voiceover list
+ * 6. Set status to 'pending' so the voiceover pipeline (Phase 2) picks it up
  */
 async function processScriptCard(
   cardId: string,
@@ -171,7 +224,6 @@ async function processScriptCard(
   targetListId?: string,
   model?: string
 ): Promise<ProcessingResult> {
-  // Stage 1: Generate script
   await upsertCard(cardId, cardName, channel.id, 'processing', null, null, 'script_generating');
 
   try {
@@ -190,7 +242,7 @@ async function processScriptCard(
     const scriptText = await generateScript(config, cardName, model);
     console.log(`[script] Script generated: ${scriptText.length} chars`);
 
-    // Stage 2: Upload script to Trello
+    // Upload script .docx to Trello
     await updateStage(cardId, 'script_uploading');
     const docxBuffer = await buildDocx(cardName, scriptText);
     const sanitizedName = cardName.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
@@ -203,34 +255,15 @@ async function processScriptCard(
     );
     console.log(`[script] Script uploaded to card "${cardName}": ${scriptFileName}`);
 
-    // Move card to target voiceover list
+    // Move card to target voiceover list so Phase 2 picks it up
     if (targetListId) {
       await trelloService.moveCardToList(cardId, targetListId);
       console.log(`[script] Card "${cardName}" moved to voiceover list ${targetListId}`);
     }
 
-    // Save script URL
-    await upsertCard(cardId, cardName, channel.id, 'processing', null, null, 'generating', scriptUploaded.url);
-
-    // Stage 3: Generate voiceover from the script text we already have
-    console.log(`[script] Generating voiceover for "${cardName}" (${scriptText.length} chars)...`);
-    const audioBuffer = await generateAudio(scriptText, channel.voice_config, async (stage) => {
-      await updateStage(cardId, stage === 'generating' ? 'generating' : 'generating');
-    });
-    console.log(`[script] Voiceover ready: ${(audioBuffer.length / 1024 / 1024).toFixed(2)} MB`);
-
-    // Stage 4: Upload voiceover to Trello
-    await updateStage(cardId, 'uploading');
-    const voiceFileName = `${sanitizedName}_voiceover.mp3`;
-    const voiceUploaded = await trelloService.uploadAttachmentToCard(
-      cardId,
-      voiceFileName,
-      audioBuffer
-    );
-    console.log(`[script] Voiceover uploaded to card "${cardName}": ${voiceFileName}`);
-
-    // Done
-    await upsertCard(cardId, cardName, channel.id, 'completed', null, voiceUploaded.url, null, scriptUploaded.url);
+    // Mark as pending — the voiceover pipeline (Phase 2) will handle TTS
+    await upsertCard(cardId, cardName, channel.id, 'pending', null, null, null, scriptUploaded.url);
+    console.log(`[script] Card "${cardName}" script done → pending for voiceover`);
 
     return { cardId, cardName, success: true };
   } catch (err) {
