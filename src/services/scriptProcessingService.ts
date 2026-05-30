@@ -8,32 +8,27 @@ import { Document, Packer, Paragraph, TextRun } from 'docx';
 const FEEDER_SCRIPTS_BUCKET = 'feeder-scripts';
 const PRIMARY_DOCS_BUCKET = 'primary-documents';
 const STALE_SCRIPT_MINUTES = 10; // Cards stuck in script generation longer than this are reset
-const CONCURRENCY_LIMIT = 6;
+const CONCURRENCY_LIMIT = 5;
 
 /**
- * Runs tasks concurrently with a max concurrency limit.
+ * Runs tasks concurrently with a worker pool (up to `limit` workers).
  */
 async function runWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = [];
-  const executing: Promise<void>[] = [];
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
 
-  for (const item of items) {
-    const p = fn(item).then((result) => {
-      results.push(result);
-    });
-    executing.push(p as unknown as Promise<void>);
-
-    if (executing.length >= limit) {
-      await Promise.race(executing);
-      // Remove settled promises
-      for (let i = executing.length - 1; i >= 0; i--) {
-        const settled = await Promise.race([executing[i].then(() => true), Promise.resolve(false)]);
-        if (settled) executing.splice(i, 1);
-      }
+  async function worker() {
+    while (nextIndex < items.length) {
+      const idx = nextIndex++;
+      results[idx] = await fn(items[idx]);
     }
   }
 
-  await Promise.all(executing);
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    () => worker()
+  );
+  await Promise.all(workers);
   return results;
 }
 

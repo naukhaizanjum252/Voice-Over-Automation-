@@ -3,34 +3,30 @@ import type { Channel, ProcessingResult, TrelloCard } from '@/types';
 import * as trelloService from './trelloService';
 import { extractText } from './fileParserService';
 import { generateAudio } from './voiceService';
+import { fetchPrimaryDocTexts, processChannelScripts } from './scriptProcessingService';
 
 const STALE_PROCESSING_MINUTES = 15; // Cards stuck in "processing" longer than this are auto-reset
 const CONCURRENCY_LIMIT = 6;
 
 /**
- * Runs tasks concurrently with a max concurrency limit.
+ * Runs tasks concurrently with a worker pool (up to `limit` workers).
  */
 async function runWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = [];
-  const executing: Promise<void>[] = [];
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
 
-  for (const item of items) {
-    const p = fn(item).then((result) => {
-      results.push(result);
-    });
-    executing.push(p as unknown as Promise<void>);
-
-    if (executing.length >= limit) {
-      await Promise.race(executing);
-      // Remove settled promises
-      for (let i = executing.length - 1; i >= 0; i--) {
-        const settled = await Promise.race([executing[i].then(() => true), Promise.resolve(false)]);
-        if (settled) executing.splice(i, 1);
-      }
+  async function worker() {
+    while (nextIndex < items.length) {
+      const idx = nextIndex++;
+      results[idx] = await fn(items[idx]);
     }
   }
 
-  await Promise.all(executing);
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    () => worker()
+  );
+  await Promise.all(workers);
   return results;
 }
 
@@ -348,14 +344,28 @@ export async function retryCard(processedCardId: string): Promise<ProcessingResu
   const channel = record.channels as Channel;
   const trelloCardId = record.trello_card_id;
 
-  // Reset status to pending so processCard doesn't skip it
+  // Fetch fresh card data directly by ID
+  const card = await trelloService.getCardById(trelloCardId);
+
+  // Check if card has a script attachment — if not, it needs Phase 1 (script generation)
+  const scriptAttachment = trelloService.getScriptAttachment(card.attachments || []);
+  if (!scriptAttachment && channel.title_list_mappings?.length > 0) {
+    // Delete the DB record so Phase 1 picks it up fresh
+    console.log(`[retry] Card "${card.name}" has no script — deleting record for Phase 1 re-processing`);
+    await supabase.from('processed_cards').delete().eq('id', processedCardId);
+    // Run Phase 1 immediately for this channel
+    const primaryDocTexts = await fetchPrimaryDocTexts();
+    const results = await processChannelScripts(channel, primaryDocTexts);
+    const thisResult = results.find((r) => r.cardId === trelloCardId);
+    return thisResult ?? { cardId: trelloCardId, cardName: card.name, success: true };
+  }
+
+  // Has a script — reset and run Phase 2 (voiceover)
   await supabase
     .from('processed_cards')
     .update({ status: 'pending', processing_stage: null, error_message: null, updated_at: new Date().toISOString() })
     .eq('id', processedCardId);
 
-  // Fetch fresh card data directly by ID
-  const card = await trelloService.getCardById(trelloCardId);
   return processCard(card, channel);
 }
 
@@ -375,14 +385,28 @@ export async function manualRunFull(processedCardId: string): Promise<Processing
   const channel = record.channels as Channel;
   const trelloCardId = record.trello_card_id;
 
-  // Reset status so processCard doesn't skip it
+  // Fetch fresh card data directly by ID
+  const card = await trelloService.getCardById(trelloCardId);
+
+  // Check if card has a script attachment — if not, it needs Phase 1 (script generation)
+  const scriptAttachment = trelloService.getScriptAttachment(card.attachments || []);
+  if (!scriptAttachment && channel.title_list_mappings?.length > 0) {
+    // Delete the DB record so Phase 1 picks it up fresh
+    console.log(`[manual-full] Card "${card.name}" has no script — deleting record for Phase 1 re-processing`);
+    await supabase.from('processed_cards').delete().eq('id', processedCardId);
+    // Run Phase 1 immediately for this channel
+    const primaryDocTexts = await fetchPrimaryDocTexts();
+    const results = await processChannelScripts(channel, primaryDocTexts);
+    const thisResult = results.find((r) => r.cardId === trelloCardId);
+    return thisResult ?? { cardId: trelloCardId, cardName: card.name, success: true };
+  }
+
+  // Has a script — reset and run Phase 2 (voiceover)
   await supabase
     .from('processed_cards')
     .update({ status: 'pending', processing_stage: null, error_message: null, updated_at: new Date().toISOString() })
     .eq('id', processedCardId);
 
-  // Fetch fresh card data directly by ID
-  const card = await trelloService.getCardById(trelloCardId);
   return processCard(card, channel);
 }
 

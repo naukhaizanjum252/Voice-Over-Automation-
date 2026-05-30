@@ -434,18 +434,23 @@ function CardRow({ card, onRefresh, last }: { card: ProcessedCard; onRefresh: ()
     finally { setManualAction(null); }
   };
 
+  const isPendingWithScript = card.status === 'pending' && !!card.script_url;
+
   const statusColor = card.status === 'completed' ? 'var(--success)'
     : card.status === 'failed' ? 'var(--danger)'
     : card.status === 'processing' ? 'var(--warning)'
+    : isPendingWithScript ? 'var(--accent)'
     : 'var(--text-muted)';
 
   const statusBg = card.status === 'completed' ? 'var(--success-muted)'
     : card.status === 'failed' ? 'var(--danger-muted)'
     : card.status === 'processing' ? 'var(--warning-muted)'
+    : isPendingWithScript ? 'var(--accent-muted)'
     : 'var(--surface-2)';
 
   const statusLabel = card.status === 'processing' && card.processing_stage
     ? card.processing_stage
+    : isPendingWithScript ? 'Script Generated'
     : card.status;
 
   const ago = (() => {
@@ -488,7 +493,7 @@ function CardRow({ card, onRefresh, last }: { card: ProcessedCard; onRefresh: ()
               Retry
             </button>
           )}
-          {card.status === 'completed' && card.script_url && (
+          {card.script_url && (card.status === 'completed' || card.status === 'pending') && (
             <a
               href={card.script_url}
               target="_blank"
