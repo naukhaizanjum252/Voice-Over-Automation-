@@ -19,46 +19,14 @@ export async function GET() {
       return NextResponse.json({ error: chErr.message }, { status: 500 });
     }
 
-    // Fetch processed cards — get recent cards for display + full counts via separate queries
+    // Fetch all processed cards
     const { data: cards, error: cardErr } = await supabase
       .from('processed_cards')
       .select('*')
-      .order('updated_at', { ascending: false })
+      .order('updated_at', { ascending: false });
 
     if (cardErr) {
       return NextResponse.json({ error: cardErr.message }, { status: 500 });
-    }
-
-    // Fetch accurate counts per channel via RPC or per-status count queries
-    // Supabase count queries bypass the default 1000 row limit
-    const statuses = ['completed', 'failed', 'processing', 'pending'] as const;
-    const countMap = new Map<string, { total: number; completed: number; failed: number; processing: number }>();
-
-    const countResults = await Promise.all(
-      (channels ?? []).map(async (ch: Channel) => {
-        const counts = await Promise.all(
-          statuses.map(async (status) => {
-            const { count } = await supabase
-              .from('processed_cards')
-              .select('*', { count: 'exact', head: true })
-              .eq('channel_id', ch.id)
-              .eq('status', status);
-            return { status, count: count ?? 0 };
-          })
-        );
-        const entry = { total: 0, completed: 0, failed: 0, processing: 0 };
-        for (const c of counts) {
-          entry.total += c.count;
-          if (c.status === 'completed') entry.completed = c.count;
-          else if (c.status === 'failed') entry.failed = c.count;
-          else if (c.status === 'processing') entry.processing = c.count;
-        }
-        return { channelId: ch.id, entry };
-      })
-    );
-
-    for (const { channelId, entry } of countResults) {
-      countMap.set(channelId, entry);
     }
 
     // Collect unique board IDs and fetch board + list names from Trello
@@ -79,14 +47,15 @@ export async function GET() {
       }
     }
 
-    // Build stats per channel — use accurate counts from countMap, cards from the (capped) query for display
+    // Build stats per channel
     const stats: ChannelStats[] = (channels ?? []).map((ch: Channel) => {
       const channelCards = (cards ?? []).filter(
         (c: ProcessedCard) => c.channel_id === ch.id
       );
 
-      // Use accurate counts (not limited by Supabase row cap)
-      const counts = countMap.get(ch.id) ?? { total: 0, completed: 0, failed: 0, processing: 0 };
+      const completed = channelCards.filter((c: ProcessedCard) => c.status === 'completed').length;
+      const failed = channelCards.filter((c: ProcessedCard) => c.status === 'failed').length;
+      const processing = channelCards.filter((c: ProcessedCard) => c.status === 'processing').length;
       const lastRun = channelCards.length > 0 ? channelCards[0].updated_at : null;
 
       return {
@@ -99,10 +68,10 @@ export async function GET() {
           voiceoverListId: m.voiceoverListId,
           voiceoverListName: listNameMap.get(m.voiceoverListId) ?? m.voiceoverListId,
         })),
-        total: counts.total,
-        completed: counts.completed,
-        failed: counts.failed,
-        processing: counts.processing,
+        total: channelCards.length,
+        completed,
+        failed,
+        processing,
         lastRun,
         cards: channelCards,
       };
