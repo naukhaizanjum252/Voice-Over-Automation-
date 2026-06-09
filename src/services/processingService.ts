@@ -6,7 +6,7 @@ import { generateAudio } from './voiceService';
 import { fetchPrimaryDocTexts, processChannelScripts } from './scriptProcessingService';
 
 const STALE_PROCESSING_MINUTES = 15; // Cards stuck in "processing" longer than this are auto-reset
-const CONCURRENCY_LIMIT = 6;
+const CONCURRENCY_LIMIT = 8;
 
 /**
  * Runs tasks concurrently with a worker pool (up to `limit` workers).
