@@ -124,18 +124,30 @@ export function getScriptAttachment(
   attachments: TrelloAttachment[]
 ): TrelloAttachment | null {
   const allowedExtensions = ['.txt', '.doc', '.docx', '.pdf'];
+  const scriptMimeTypes = [
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+    'application/msword',           // .doc
+    'application/pdf',              // .pdf
+    'text/plain',                   // .txt
+  ];
   return (
     attachments.find((att) => {
       const name = att.name.toLowerCase();
-      return allowedExtensions.some((ext) => name.endsWith(ext));
+      const mime = (att.mimeType || '').toLowerCase();
+      // Match by file extension OR by mimeType
+      return allowedExtensions.some((ext) => name.endsWith(ext))
+        || scriptMimeTypes.some((m) => mime === m);
     }) ?? null
   );
 }
 
 export function hasAudioAttachment(attachments: TrelloAttachment[]): boolean {
   const audioExtensions = ['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.wma', '.opus'];
+  const audioMimeTypes = ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4', 'audio/aac', 'audio/flac', 'audio/x-ms-wma', 'audio/opus'];
   return attachments.some((att) => {
     const name = att.name.toLowerCase();
-    return audioExtensions.some((ext) => name.endsWith(ext));
+    const mime = (att.mimeType || '').toLowerCase();
+    return audioExtensions.some((ext) => name.endsWith(ext))
+      || audioMimeTypes.some((m) => mime === m);
   });
 }

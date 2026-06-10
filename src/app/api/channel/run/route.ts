@@ -24,10 +24,17 @@ export async function POST(request: Request) {
     }
 
     const ch = channel as Channel;
+    const debug: string[] = [];
+
+    debug.push(`Channel: "${ch.name}" (${ch.id})`);
+    debug.push(`Voiceover lists: [${ch.trello_list_ids.join(', ')}]`);
+    debug.push(`Title mappings: ${ch.title_list_mappings?.length ?? 0}`);
+    debug.push(`Auto-run: ${ch.auto_run_enabled}`);
 
     // Phase 1: Generate scripts (if title list mappings configured)
     let scriptResults: { cardId: string; cardName: string; success: boolean; error?: string }[] = [];
     if (ch.title_list_mappings && ch.title_list_mappings.length > 0) {
+      debug.push('Phase 1: Script generation starting...');
       const { fetchPrimaryDocTexts } = await import('@/services/scriptProcessingService');
       const primaryDocTexts = await fetchPrimaryDocTexts();
 
@@ -40,14 +47,38 @@ export async function POST(request: Request) {
       const scriptModel = modelSetting?.value || undefined;
 
       scriptResults = await processChannelScripts(ch, primaryDocTexts, scriptModel);
+      debug.push(`Phase 1 done: ${scriptResults.length} cards processed`);
+    } else {
+      debug.push('Phase 1: Skipped (no title list mappings)');
     }
 
     // Phase 2: Generate voiceovers
+    debug.push(`Phase 2: Voiceover processing starting for ${ch.trello_list_ids.length} lists...`);
+
+    // Fetch cards from each list and log what we find
+    const { getCardsInList, getScriptAttachment, hasAudioAttachment } = await import('@/services/trelloService');
+    for (const listId of ch.trello_list_ids) {
+      try {
+        const listCards = await getCardsInList(listId);
+        debug.push(`  List ${listId}: ${listCards.length} cards found`);
+        for (const c of listCards) {
+          const attachInfo = (c.attachments || []).map((a: { name: string; mimeType?: string }) => `${a.name} (${a.mimeType || 'no-mime'})`);
+          const hasScript = !!getScriptAttachment(c.attachments || []);
+          const hasAudio = hasAudioAttachment(c.attachments || []);
+          debug.push(`    → "${c.name}" | attachments: [${attachInfo.join(', ')}] | script: ${hasScript} | audio: ${hasAudio}`);
+        }
+      } catch (err) {
+        debug.push(`  List ${listId}: FETCH ERROR — ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     const voiceResults = await processChannel(ch);
+    debug.push(`Phase 2 done: ${voiceResults.length} cards processed`);
 
     return NextResponse.json({
       scripts: scriptResults,
       voiceovers: voiceResults,
+      debug,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error';

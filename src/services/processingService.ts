@@ -273,7 +273,7 @@ async function processCard(
 
     // Stage: extracting
     await updateStage(card.id, 'extracting');
-    const text = await extractText(fileBuffer, attachment.name);
+    const text = await extractText(fileBuffer, attachment.name, attachment.mimeType);
 
     if (!text || text.trim().length === 0) {
       throw new Error('Extracted text is empty');
@@ -451,7 +451,7 @@ export async function manualRunVoiceover(processedCardId: string): Promise<Proce
 
     // 2. Extract text
     await updateStage(trelloCardId, 'extracting');
-    const text = await extractText(fileBuffer, attachment.name);
+    const text = await extractText(fileBuffer, attachment.name, attachment.mimeType);
 
     if (!text || text.trim().length === 0) {
       throw new Error('Extracted text is empty');

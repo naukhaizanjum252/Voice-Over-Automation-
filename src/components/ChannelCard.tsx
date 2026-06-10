@@ -60,7 +60,11 @@ export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
   const handleRun = async () => {
     setRunning(true);
     try {
-      await fetch(`/api/channel/run?channelId=${channel.id}`, { method: 'POST' });
+      const res = await fetch(`/api/channel/run?channelId=${channel.id}`, { method: 'POST' });
+      const data = await res.json();
+      if (data.debug) {
+        console.log('[Run Now Debug]', data.debug.join('\n'));
+      }
       onRefresh();
     } catch (err) { console.error('Run failed:', err); }
     finally { setRunning(false); }
@@ -239,6 +243,7 @@ export default function ChannelCard({ stats, onRefresh, onEdit }: Props) {
             ))}
           </div>
         )}
+
 
         {/* Config preview cards */}
         <ConfigPreview channel={channel} titleListMappings={stats.titleListMappings} listNames={stats.listNames} boardName={stats.boardName} />

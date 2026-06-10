@@ -2,11 +2,12 @@ import mammoth from 'mammoth';
 import pdfParse from 'pdf-parse';
 
 /**
- * Extracts plain text from a file buffer based on extension.
+ * Extracts plain text from a file buffer based on extension or mimeType.
  */
 export async function extractText(
   buffer: Buffer,
-  fileName: string
+  fileName: string,
+  mimeType?: string
 ): Promise<string> {
   const ext = fileName.toLowerCase().split('.').pop() ?? '';
 
@@ -23,7 +24,32 @@ export async function extractText(
       return extractFromPdf(buffer);
 
     default:
-      throw new Error(`Unsupported file type: .${ext}`);
+      // Fallback: use mimeType if extension is missing or unrecognized
+      if (mimeType) {
+        const mime = mimeType.toLowerCase();
+        if (mime === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' || mime === 'application/msword') {
+          return extractFromDocx(buffer);
+        }
+        if (mime === 'application/pdf') {
+          return extractFromPdf(buffer);
+        }
+        if (mime === 'text/plain') {
+          return cleanText(buffer.toString('utf-8'));
+        }
+      }
+
+      // Last resort: try docx parser (most common script format)
+      try {
+        const text = await extractFromDocx(buffer);
+        if (text && text.trim().length > 0) {
+          console.log(`[fileParser] No extension/mime match for "${fileName}", but docx parser succeeded`);
+          return text;
+        }
+      } catch {
+        // not a docx
+      }
+
+      throw new Error(`Unsupported file type: .${ext} ${fileName.toLowerCase()}`);
   }
 }
 
