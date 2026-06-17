@@ -17,7 +17,8 @@ import * as ai84Service from './ai84Service';
  *   GET  /tts/status/{id}       → poll until ready
  *   GET  /tts/download/{id}     → download audio file
  *
- * Fallback: AI84.pro — used when 69 Labs fails or doesn't respond.
+ * Provider order is controlled by TTS_PRIMARY_PROVIDER ("ai84" default, or "69labs").
+ * Whichever isn't primary is used as the automatic fallback.
  */
 const BASE = 'https://69labs.vip/api/v1';
 const MAX_RETRIES = 2;
@@ -34,9 +35,27 @@ function apiHeaders(): Record<string, string> {
 
 // ── TTS with automatic fallback ──
 
+type TtsProvider = 'ai84' | '69labs';
+
 /**
- * Generates audio using 69 Labs as primary, AI84.pro as fallback.
- * Falls back when 69 Labs throws any error or times out.
+ * Resolves the provider order from the TTS_PRIMARY_PROVIDER env var.
+ * "69labs" → 69 Labs first, AI84 fallback. Anything else (default) → AI84 first, 69 Labs fallback.
+ */
+function resolveProviderOrder(): TtsProvider[] {
+  const raw = (env.tts.primaryProvider || 'ai84').toLowerCase().trim();
+  if (['69labs', 'labs69', '69', 'elevenlabs'].includes(raw)) {
+    return ['69labs', 'ai84'];
+  }
+  return ['ai84', '69labs'];
+}
+
+/**
+ * Generates audio with automatic fallback. The primary provider is chosen by
+ * the TTS_PRIMARY_PROVIDER env var (default "ai84"); the other is the fallback.
+ *
+ * Note: 69 Labs uses `config.voiceId` directly, but AI84 must match that ID
+ * to its own catalog via the source voice's name + gender — resolved from the
+ * static ElevenLabs catalog (no network) before calling AI84.
  */
 export async function generateAudio(
   text: string,
@@ -44,51 +63,63 @@ export async function generateAudio(
   onStageChange?: (stage: 'queued' | 'generating') => void,
   cancelSignal?: AbortSignal
 ): Promise<Buffer> {
-  try {
-    return await generateAudioWith69Labs(text, config, onStageChange, cancelSignal);
-  } catch (primaryError) {
-    // If cancelled, don't fall back — propagate immediately
-    if (cancelSignal?.aborted) throw primaryError;
+  const order = resolveProviderOrder();
+  const errors: string[] = [];
 
-    const errMsg = primaryError instanceof Error ? primaryError.message : String(primaryError);
-    console.error(`[voiceService] 69 Labs failed: ${errMsg}`);
+  for (let i = 0; i < order.length; i++) {
+    const provider = order[i];
+    const role = i === 0 ? 'primary' : 'fallback';
 
-    // Check if AI84 fallback is configured
-    if (!env.ai84.apiKey) {
-      console.error('[voiceService] AI84 fallback not configured (no API key). Re-throwing 69 Labs error.');
-      throw primaryError;
+    // Skip AI84 if it isn't configured (69 Labs needs no extra key beyond labs69).
+    if (provider === 'ai84' && !env.ai84.apiKey) {
+      console.warn(`[voiceService] AI84 (${role}) not configured (no API key), skipping.`);
+      continue;
     }
 
-    console.log('[voiceService] Falling back to AI84.pro...');
+    if (role === 'fallback') {
+      console.log(`[voiceService] Falling back to ${provider}...`);
+    }
 
-    // Look up the source voice name and gender so AI84 can find the best match
-    let sourceName: string | undefined;
-    let sourceGender: string | undefined;
     try {
-      const allVoices = await getVoices();
-      const sourceVoice = allVoices.find((v) => v.voice_id === config.voiceId);
-      if (sourceVoice) {
-        sourceName = sourceVoice.name;
-        sourceGender = sourceVoice.labels?.gender;
-        console.log(`[voiceService] Source voice for matching: "${sourceName}" (${sourceGender ?? 'unknown gender'})`);
+      let audio: Buffer;
+      if (provider === 'ai84') {
+        const { sourceName, sourceGender } = resolveSourceVoice(config.voiceId);
+        audio = await ai84Service.generateAudio(text, config, onStageChange, sourceName, sourceGender, cancelSignal);
+      } else {
+        audio = await generateAudioWith69Labs(text, config, onStageChange, cancelSignal);
       }
-    } catch {
-      console.warn('[voiceService] Could not fetch source voice info for matching');
-    }
-
-    try {
-      const audio = await ai84Service.generateAudio(text, config, onStageChange, sourceName, sourceGender, cancelSignal);
-      console.log('[voiceService] AI84 fallback succeeded.');
+      if (role === 'fallback') {
+        console.log(`[voiceService] ${provider} fallback succeeded.`);
+      }
       return audio;
-    } catch (fallbackError) {
-      if (cancelSignal?.aborted) throw fallbackError;
-      const fallbackMsg = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
-      console.error(`[voiceService] AI84 fallback also failed: ${fallbackMsg}`);
-      throw new Error(
-        `TTS failed on both providers. 69 Labs: ${errMsg} | AI84: ${fallbackMsg}`
-      );
+    } catch (err) {
+      // If cancelled, don't fall back — propagate immediately.
+      if (cancelSignal?.aborted) throw err;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[voiceService] ${provider} (${role}) failed: ${msg}`);
+      errors.push(`${provider}: ${msg}`);
     }
   }
+
+  throw new Error(`TTS failed on all providers. ${errors.join(' | ')}`);
+}
+
+/**
+ * Resolves a voice's name + gender from the static ElevenLabs catalog so AI84
+ * can match it to an equivalent voice. Synchronous — no network call, so the
+ * primary path stays fast and independent of 69 Labs availability.
+ *
+ * Cloned/library voices not in the static catalog still match via AI84's
+ * hardcoded ID map and id-in-name tiers, which key off the voiceId alone.
+ */
+function resolveSourceVoice(voiceId: string): { sourceName?: string; sourceGender?: string } {
+  const sourceVoice = ELEVENLABS_VOICES.find((v) => v.voice_id === voiceId);
+  if (sourceVoice) {
+    console.log(`[voiceService] Source voice for matching: "${sourceVoice.name}" (${sourceVoice.labels?.gender ?? 'unknown gender'})`);
+    return { sourceName: sourceVoice.name, sourceGender: sourceVoice.labels?.gender };
+  }
+  console.log(`[voiceService] Source voice ${voiceId} not in static catalog — AI84 will match by ID/hardcoded map`);
+  return {};
 }
 
 /**
