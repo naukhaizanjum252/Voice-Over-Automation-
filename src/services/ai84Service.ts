@@ -32,6 +32,9 @@ const ELEVENLABS_TO_AI84_NAME: Record<string, string> = {
   'UGTtbzgh3HObxRjWaSpr': 'OMEGAVERSE -UGTtbzgh3HObxRjWaSpr',
   'VU16byTywsWv5JpI8rbc': 'OMEGAVERSE - VU16byTywsWv5JpI8rbc',
   'zGjIP4SZlMnY9m93k97r': 'CUPID CINEMA - zGjIP4SZlMnY9m93k97r',
+  // NOTE: this ElevenLabs ID has TWO AI84 clones — the French one below and a Polish one
+  // ("8fcyCHOzlKDlxh1InJSf - SmakPrawdy - Dish Polish"). A single ID can only map to one
+  // name; keeping French. If Polish is needed, it must be selected another way.
   '8fcyCHOzlKDlxh1InJSf': '8fcyCHOzlKDlxh1InJSf - DansTon and Dentro Etichetta - Dish French',
   'kaGxVtjLwllv1bi2GFag': 'kaGxVtjLwllv1bi2GFag - Miltar Spektrum - German',
   'sai9UY7iXkRDSsXHR0bZ': 'sai9UY7iXkRDSsXHR0bZ - Loving wallaby',
@@ -44,6 +47,15 @@ const ELEVENLABS_TO_AI84_NAME: Record<string, string> = {
   'Cb8NLd0sUB8jI4MW2f9M': 'JEDEDIAH 1',
   'XwswTF89pZKbWpVX4A7R': 'Rune Dogs',
   'Z3R5wn05IrDiVCyEkUrK': 'ARABELLA',
+  // AI84 clone name is the ElevenLabs ID itself (also caught by the id-in-name tier).
+  'bfGb7JTLUnZebZRiFYyq': 'bfGb7JTLUnZebZRiFYyq',
+  '4e32WqNVWRquDa1OcRYZ': '4e32WqNVWRquDa1OcRYZ',
+  'DMyrgzQFny3JI1Y1paM5': 'DMyrgzQFny3JI1Y1paM5',
+  'Nh2zY9kknu6z4pZy6FhD': 'Nh2zY9kknu6z4pZy6FhD',
+  'fiRQs1f3h1NvmrcmdYpo': 'Moonlit german',
+  '8z82LG47qQ2qjeeQB8lk': 'moonlit english',
+  // AI84-only voices in the sheet (CHINESE, Natasha, SPANISH 1, SPANISH 2) have no
+  // ElevenLabs ID, so they can't be keyed here — select them directly by AI84 voice.
 };
 
 // Cache AI84 voices so we don't fetch the list on every fallback call
@@ -344,37 +356,60 @@ async function pollAndDownload(
     const status = ((job.status ?? data.status ?? '') as string);
     const statusLower = status.toLowerCase();
 
+    // Resolve a possible audio URL from any known field/shape.
+    const audioUrl = (job.audio_url ?? job.download_url ?? job.url ?? job.output_url
+      ?? data.audio_url ?? data.download_url ?? data.url) as string | undefined;
+
     if (status !== lastStatus || pollCount === 1) {
       const queuePos = job.queue_position != null ? ` (queue #${job.queue_position})` : '';
       const progress = job.progress != null ? ` progress: ${job.progress}%` : '';
       console.log(`[ai84] Job ${jobId} status: "${status}"${queuePos}${progress}`);
+      // Log the full payload on first poll + each status change to debug status-string mismatches.
+      console.log(`[ai84] Job ${jobId} raw status payload: ${JSON.stringify(data).slice(0, 800)}`);
       lastStatus = status;
     }
 
-    // Done — download audio
-    if (statusLower === 'done' || statusLower === 'completed' || statusLower === 'success') {
-      const audioUrl = (job.audio_url ?? job.download_url ?? data.audio_url ?? data.url) as string | null;
-      if (!audioUrl) {
-        throw new Error(
-          `AI84 job done but no audio_url: ${JSON.stringify(data).slice(0, 500)}`
-        );
-      }
-      console.log(`[ai84] Job ${jobId} done, downloading audio...`);
-      return await downloadFromUrl(audioUrl);
-    }
+    const IN_PROGRESS = ['queued', 'pending', 'processing', 'running', 'in_progress', 'starting', 'waiting'];
+    const TERMINAL_DONE = ['done', 'completed', 'complete', 'success', 'succeeded', 'finished', 'ready'];
+    const TERMINAL_FAIL = ['failed', 'error', 'errored', 'cancelled', 'canceled', 'rejected'];
 
-    // Failed
-    if (statusLower === 'failed' || statusLower === 'error' || statusLower === 'cancelled') {
+    const completedAt = (job.completed_at ?? data.completed_at) as string | null | undefined;
+    const progressNum = typeof job.progress === 'number' ? (job.progress as number) : undefined;
+
+    // Failed — check first so an error status can't be mistaken for success.
+    if (TERMINAL_FAIL.includes(statusLower) || job.failed_at) {
       const errMsg = (job.error_message ?? job.error ?? data.error ?? data.message ?? '') as string;
       throw new Error(
         `AI84 TTS job failed: ${errMsg || JSON.stringify(data).slice(0, 300)}`
       );
     }
 
-    // In progress — notify generating stage
-    if (!notifiedGenerating && (statusLower === 'processing' || statusLower === 'running')) {
+    // Done — AI84 keeps status "queued" even while working and may flip straight to
+    // complete, so the reliable terminal signals are: a populated audio_url, a
+    // completed_at timestamp, or an explicit terminal-done status string.
+    const looksDone = !!audioUrl || !!completedAt || TERMINAL_DONE.includes(statusLower);
+
+    if (looksDone) {
+      if (!audioUrl) {
+        throw new Error(
+          `AI84 job ${jobId} reports done (status="${status}", completed_at=${completedAt}) but no audio_url: ${JSON.stringify(data).slice(0, 500)}`
+        );
+      }
+      console.log(`[ai84] Job ${jobId} done (status="${status}"), downloading audio...`);
+      return await downloadFromUrl(audioUrl);
+    }
+
+    // In progress — advance the UI stage to "generating" once the job is actually
+    // working. AI84 signals work via progress > 0 while status stays "queued", so
+    // we key off progress as well as the processing/running statuses.
+    if (!notifiedGenerating && (statusLower === 'processing' || statusLower === 'running' || (progressNum != null && progressNum > 0))) {
       notifiedGenerating = true;
       onStageChange?.('generating');
+    }
+
+    // Unknown, non-terminal state with no audio yet — log it but keep polling.
+    if (statusLower && !IN_PROGRESS.includes(statusLower)) {
+      console.warn(`[ai84] Job ${jobId} unknown state: "${status}" — continuing to poll`);
     }
 
     // queued / processing / running — keep polling
