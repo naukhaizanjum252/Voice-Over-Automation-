@@ -224,6 +224,10 @@ async function pollAndDownload(
   let notifiedGenerating = false;
   let pollCount = 0;
 
+  // Heartbeat: re-emit the current stage every ~60s so the card's updated_at stays
+  // fresh and the stale-job recovery doesn't reset/fail a job that's still running.
+  const HEARTBEAT_EVERY_POLLS = Math.max(1, Math.round(60000 / TTS_POLL_INTERVAL_MS));
+
   // Poll indefinitely until the TTS provider returns a terminal status.
   // Vercel's maxDuration or user cancellation will stop us if needed.
   while (true) {
@@ -233,6 +237,10 @@ async function pollAndDownload(
     // Check for cancellation after sleep (catches abort during wait)
     if (cancelSignal?.aborted) {
       throw new Error('Terminated by user');
+    }
+
+    if (pollCount % HEARTBEAT_EVERY_POLLS === 0) {
+      onStageChange?.(notifiedGenerating ? 'generating' : 'queued');
     }
 
     let statusRes: Response;

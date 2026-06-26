@@ -131,25 +131,29 @@ function extractVoiceArray(data: unknown): AI84Voice[] {
 /**
  * Finds the best matching AI84 voice for a given 69 Labs / ElevenLabs voice ID.
  *
- * Matching priority:
+ * Matching priority (name/ID-based only — these confidently identify the voice):
  * 1. Hardcoded mapping (ELEVENLABS_TO_AI84_NAME) — matched by name in AI84 catalog
  * 2. AI84 voice name contains the ElevenLabs voice ID (cloned voices use ID in name)
  * 3. Exact canonical_voice_id match
  * 4. Exact name match (case-insensitive)
  * 5. Fuzzy name match + same gender
- * 6. Same gender match (pick first)
- * 7. First available voice as last resort
+ *
+ * Returns null if none of the above match. We deliberately do NOT fall back to a
+ * gender match or "first available" voice: that silently substitutes an arbitrary
+ * voice (and makes different source voiceIds collapse to the same wrong one, so
+ * changing a channel's voice appears to do nothing). A null result lets the caller
+ * fall back to 69 Labs, which uses the voiceId natively and correctly.
  */
 async function findMatchingVoice(
   sourceVoiceId: string,
   sourceVoiceName?: string,
   sourceGender?: string
-): Promise<string> {
+): Promise<string | null> {
   const voices = await fetchAI84Voices();
 
   if (voices.length === 0) {
-    console.warn('[ai84] No voices available, using original voiceId as-is');
-    return sourceVoiceId;
+    console.warn('[ai84] No voices available — no confident match, will fall back to 69 Labs');
+    return null;
   }
 
   // 1. Hardcoded mapping — highest priority
@@ -225,22 +229,11 @@ async function findMatchingVoice(
     }
   }
 
-  // 6. Gender match — pick first voice with same gender
-  if (sourceGender) {
-    const genderLower = sourceGender.toLowerCase();
-    const genderMatch = voices.find((v) => {
-      const vGender = (v.gender ?? v.labels?.gender ?? '').toLowerCase();
-      return vGender === genderLower;
-    });
-    if (genderMatch) {
-      console.log(`[ai84] Gender match: ${genderMatch.canonical_voice_id} (${genderMatch.name})`);
-      return genderMatch.canonical_voice_id;
-    }
-  }
-
-  // 7. Last resort — first voice
-  console.log(`[ai84] No match found, using first available: ${voices[0].canonical_voice_id} (${voices[0].name})`);
-  return voices[0].canonical_voice_id;
+  // No confident (name/ID-based) match. Do NOT substitute a gender/first-available
+  // voice — that would silently use the wrong voice. Return null so the caller falls
+  // back to 69 Labs, which can use this voiceId directly.
+  console.warn(`[ai84] No confident voice match for "${sourceVoiceName ?? sourceVoiceId}" (${sourceVoiceId}) — falling back to 69 Labs`);
+  return null;
 }
 
 // ── TTS Generation ──
@@ -266,6 +259,14 @@ export async function generateAudio(
     sourceVoiceName,
     sourceGender
   );
+
+  // No confident match — bail so the caller (voiceService) falls back to 69 Labs,
+  // rather than generating audio in an arbitrary wrong voice.
+  if (!canonicalVoiceId) {
+    throw new Error(
+      `AI84 has no confident voice match for "${sourceVoiceName ?? config.voiceId}" (${config.voiceId})`
+    );
+  }
 
   console.log(`[ai84] Starting TTS job with voice: ${canonicalVoiceId}`);
 
@@ -320,6 +321,11 @@ async function pollAndDownload(
   let notifiedGenerating = false;
   let pollCount = 0;
 
+  // Heartbeat: AI84's queue can run far longer than the stale-job cutoff. Re-emit the
+  // current stage every ~60s so the card's updated_at stays fresh and the stale-job
+  // recovery doesn't reset/fail a job that's still legitimately running.
+  const HEARTBEAT_EVERY_POLLS = Math.max(1, Math.round(60000 / POLL_INTERVAL_MS));
+
   // Poll indefinitely until the TTS provider returns a terminal status.
   while (true) {
     await sleep(POLL_INTERVAL_MS);
@@ -328,6 +334,10 @@ async function pollAndDownload(
     // Check for cancellation after sleep (catches abort during wait)
     if (cancelSignal?.aborted) {
       throw new Error('Terminated by user');
+    }
+
+    if (pollCount % HEARTBEAT_EVERY_POLLS === 0) {
+      onStageChange?.(notifiedGenerating ? 'generating' : 'queued');
     }
 
     let statusRes: Response;
