@@ -1,5 +1,5 @@
 import { env } from '@/lib/env';
-import type { VoiceConfig } from '@/types';
+import type { VoiceConfig, TtsPollResult } from '@/types';
 
 /**
  * AI84.pro TTS — Fallback provider when 69 Labs fails.
@@ -307,6 +307,126 @@ export async function generateAudio(
 
   // Step 2: Poll for completion
   return await pollAndDownload(jobId, onStageChange, cancelSignal);
+}
+
+// ── Async (resumable) API ──
+// These let the caller START a job and CHECK it later from a different invocation,
+// so a long AI84 queue/generation can span multiple cron runs without blocking.
+
+/**
+ * Starts an AI84 TTS job and returns its id immediately (no polling).
+ * Throws if there's no confident voice match (so the caller can fall back to 69 Labs).
+ */
+export async function startJob(
+  text: string,
+  config: VoiceConfig,
+  sourceVoiceName?: string,
+  sourceGender?: string
+): Promise<{ jobId: string; canonicalVoiceId: string }> {
+  const canonicalVoiceId = await findMatchingVoice(config.voiceId, sourceVoiceName, sourceGender);
+  if (!canonicalVoiceId) {
+    throw new Error(
+      `AI84 has no confident voice match for "${sourceVoiceName ?? config.voiceId}" (${config.voiceId})`
+    );
+  }
+
+  const startRes = await fetch(`${BASE}/v1/minimax/text-to-speech/async`, {
+    method: 'POST',
+    headers: apiHeaders(),
+    body: JSON.stringify({
+      canonical_voice_id: canonicalVoiceId,
+      text,
+      model: 'speech-2.6-turbo',
+      speed: config.speed ?? 1.0,
+      pitch: config.pitch ?? 1.0,
+    }),
+    signal: AbortSignal.timeout(30000),
+  });
+
+  if (!startRes.ok) {
+    const errorText = await startRes.text();
+    throw new Error(`AI84 generate ${startRes.status}: ${errorText}`);
+  }
+
+  const startData = await startRes.json();
+  const jobId = startData.job_id;
+  if (!jobId) {
+    throw new Error(`AI84: No job_id in response: ${JSON.stringify(startData).slice(0, 500)}`);
+  }
+
+  console.log(`[ai84] Started job ${jobId} with voice ${canonicalVoiceId}`);
+  return { jobId, canonicalVoiceId };
+}
+
+/**
+ * Polls an AI84 job exactly once. Returns 'running' (keep waiting), 'done' (with the
+ * downloaded audio), or 'failed'. Network blips are treated as 'running' so we retry
+ * on the next cycle rather than failing the card.
+ */
+export async function checkJob(jobId: string, cancelSignal?: AbortSignal): Promise<TtsPollResult> {
+  if (cancelSignal?.aborted) return { state: 'failed', error: 'Terminated by user' };
+
+  let statusRes: Response;
+  try {
+    statusRes = await fetch(`${BASE}/v1/minimax/text-to-speech/async/${jobId}`, {
+      headers: apiHeaders(),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (err) {
+    console.error(`[ai84] checkJob ${jobId} fetch error:`, err instanceof Error ? err.message : err);
+    return { state: 'running' }; // transient — retry next cycle
+  }
+
+  if (!statusRes.ok) {
+    const text = await statusRes.text();
+    return { state: 'failed', error: `AI84 status ${statusRes.status}: ${text.slice(0, 200)}` };
+  }
+
+  const data = await statusRes.json();
+  const parsed = interpretAi84Status(data, jobId);
+  console.log(`[ai84] checkJob ${jobId}: ${parsed.state}${parsed.error ? ` (${parsed.error})` : ''}`);
+
+  if (parsed.state === 'running') return { state: 'running' };
+  if (parsed.state === 'failed') return { state: 'failed', error: parsed.error ?? 'AI84 job failed' };
+
+  if (!parsed.audioUrl) {
+    return { state: 'failed', error: `AI84 job ${jobId} reports done but no audio_url` };
+  }
+  try {
+    const audio = await downloadFromUrl(parsed.audioUrl);
+    return { state: 'done', audio };
+  } catch (err) {
+    return { state: 'failed', error: `AI84 download failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+/**
+ * Pure interpretation of an AI84 status payload. AI84 keeps status "queued" even while
+ * working and may flip straight to complete, so the reliable done signals are: a populated
+ * audio_url, a completed_at timestamp, or an explicit terminal-done status string.
+ */
+function interpretAi84Status(
+  data: Record<string, unknown>,
+  jobId: string
+): { state: 'running' | 'done' | 'failed'; audioUrl?: string; error?: string } {
+  const job = ((data.job ?? data) ?? {}) as Record<string, unknown>;
+  const status = ((job.status ?? data.status ?? '') as string);
+  const statusLower = status.toLowerCase();
+  const audioUrl = (job.audio_url ?? job.download_url ?? job.url ?? job.output_url
+    ?? data.audio_url ?? data.download_url ?? data.url) as string | undefined;
+  const completedAt = (job.completed_at ?? data.completed_at) as string | null | undefined;
+
+  const TERMINAL_FAIL = ['failed', 'error', 'errored', 'cancelled', 'canceled', 'rejected'];
+  const TERMINAL_DONE = ['done', 'completed', 'complete', 'success', 'succeeded', 'finished', 'ready'];
+
+  if (TERMINAL_FAIL.includes(statusLower) || job.failed_at) {
+    const errMsg = (job.error_message ?? job.error ?? data.error ?? data.message ?? '') as string;
+    return { state: 'failed', error: errMsg || `AI84 job ${jobId} failed` };
+  }
+  if (!!audioUrl || !!completedAt || TERMINAL_DONE.includes(statusLower)) {
+    return { state: 'done', audioUrl };
+  }
+  return { state: 'running' };
 }
 
 /**

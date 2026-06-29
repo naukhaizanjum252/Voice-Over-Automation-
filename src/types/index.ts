@@ -64,9 +64,29 @@ export interface ProcessedCard {
   script_url: string | null;
   attachment_url: string | null;
   retry_count: number;
+  tts_job: TtsJob | null;
   created_at: string;
   updated_at: string;
 }
+
+export type TtsProvider = 'ai84' | '69labs';
+
+/** An in-flight async TTS job persisted on a card so it survives across cron runs. */
+export interface TtsJob {
+  provider: TtsProvider;
+  jobId: string;
+  /** Resolved provider voice id actually used (AI84 canonical id or 69 Labs voiceId). */
+  voiceId: string;
+  startedAt: string;
+  /** Providers already attempted, so cross-invocation fallback doesn't retry the same one. */
+  triedProviders: TtsProvider[];
+}
+
+/** Result of polling a TTS job once. */
+export type TtsPollResult =
+  | { state: 'running' }
+  | { state: 'done'; audio: Buffer }
+  | { state: 'failed'; error: string };
 
 export type CardStatus = 'pending' | 'processing' | 'completed' | 'failed';
 export type ProcessingStage =

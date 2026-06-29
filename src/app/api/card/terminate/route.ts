@@ -29,13 +29,14 @@ export async function POST(request: Request) {
     const wasCancelled = cancelCardProcess(record.trello_card_id);
     console.log(`[terminate] Card ${cardId} (trello: ${record.trello_card_id}) — process cancelled: ${wasCancelled}`);
 
-    // Mark as failed in DB
+    // Mark as failed in DB and clear any in-flight TTS job so the resume step skips it
     const { data, error } = await supabase
       .from('processed_cards')
       .update({
         status: 'failed',
         processing_stage: null,
         error_message: 'Terminated by user',
+        tts_job: null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', cardId)

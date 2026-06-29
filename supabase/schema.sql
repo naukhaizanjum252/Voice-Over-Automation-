@@ -55,6 +55,9 @@ CREATE TABLE IF NOT EXISTS processed_cards (
   error_message TEXT,
   script_url TEXT,
   attachment_url TEXT,
+  -- In-flight async TTS job (resumable across cron invocations).
+  -- Shape: { provider, jobId, voiceId, startedAt, triedProviders }
+  tts_job JSONB DEFAULT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

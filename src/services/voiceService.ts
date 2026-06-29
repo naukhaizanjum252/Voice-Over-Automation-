@@ -1,5 +1,5 @@
 import { env } from '@/lib/env';
-import type { VoiceConfig, Voice } from '@/types';
+import type { VoiceConfig, Voice, TtsJob, TtsProvider, TtsPollResult } from '@/types';
 import { ELEVENLABS_VOICES } from '@/data/elevenlabs-voices';
 import * as ai84Service from './ai84Service';
 
@@ -34,8 +34,6 @@ function apiHeaders(): Record<string, string> {
 }
 
 // ── TTS with automatic fallback ──
-
-type TtsProvider = 'ai84' | '69labs';
 
 /**
  * Resolves the provider order from the TTS_PRIMARY_PROVIDER env var.
@@ -120,6 +118,134 @@ function resolveSourceVoice(voiceId: string): { sourceName?: string; sourceGende
   }
   console.log(`[voiceService] Source voice ${voiceId} not in static catalog — AI84 will match by ID/hardcoded map`);
   return {};
+}
+
+// ── Async (resumable) TTS orchestration ──
+// Start a job and persist its id; a later cron invocation polls it once and finishes
+// when ready. This lets long AI84 queues span multiple runs without blocking/timing out.
+
+/**
+ * Starts a TTS job on the first available provider (per TTS_PRIMARY_PROVIDER), skipping
+ * any in `alreadyTried`. Returns a TtsJob to persist. Throws if no provider can start.
+ */
+export async function startTtsJob(
+  text: string,
+  config: VoiceConfig,
+  alreadyTried: TtsProvider[] = []
+): Promise<TtsJob> {
+  const order = resolveProviderOrder().filter((p) => !alreadyTried.includes(p));
+  const tried: TtsProvider[] = [...alreadyTried];
+  const errors: string[] = [];
+
+  for (const provider of order) {
+    if (provider === 'ai84' && !env.ai84.apiKey) continue;
+    tried.push(provider);
+    try {
+      if (provider === 'ai84') {
+        const { sourceName, sourceGender } = resolveSourceVoice(config.voiceId);
+        const { jobId, canonicalVoiceId } = await ai84Service.startJob(text, config, sourceName, sourceGender);
+        return { provider, jobId, voiceId: canonicalVoiceId, startedAt: new Date().toISOString(), triedProviders: tried };
+      }
+      const { jobId } = await start69LabsJob(text, config);
+      return { provider, jobId, voiceId: config.voiceId, startedAt: new Date().toISOString(), triedProviders: tried };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[voiceService] Failed to start ${provider}: ${msg}`);
+      errors.push(`${provider}: ${msg}`);
+    }
+  }
+  throw new Error(`Failed to start TTS on all providers. ${errors.join(' | ')}`);
+}
+
+/** Polls a persisted TTS job once, delegating to the provider that owns it. */
+export async function pollTtsJob(job: TtsJob, cancelSignal?: AbortSignal): Promise<TtsPollResult> {
+  if (job.provider === 'ai84') {
+    return ai84Service.checkJob(job.jobId, cancelSignal);
+  }
+  return check69LabsJob(job.jobId, cancelSignal);
+}
+
+/** Starts a 69 Labs TTS job and returns its id (no polling). */
+async function start69LabsJob(text: string, config: VoiceConfig): Promise<{ jobId: string }> {
+  const res = await fetch(`${BASE}/tts/generate`, {
+    method: 'POST',
+    headers: apiHeaders(),
+    body: JSON.stringify({
+      text,
+      voiceId: config.voiceId,
+      model_id: 'eleven_multilingual_v2',
+      voice_settings: {
+        stability: config.stability,
+        similarity_boost: 0.75,
+        speed: config.speed,
+        style: config.style ?? 0,
+      },
+    }),
+    signal: AbortSignal.timeout(30000),
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`69 Labs generate ${res.status}: ${errorText}`);
+  }
+
+  const data = await res.json();
+  const jobId = data.id ?? data.jobId ?? data.task_id ?? data.ttsId;
+  if (!jobId) {
+    throw new Error(`69 Labs: no job id in response: ${JSON.stringify(data).slice(0, 300)}`);
+  }
+  console.log(`[voiceService] Started 69 Labs job ${jobId}`);
+  return { jobId: String(jobId) };
+}
+
+/** Polls a 69 Labs job once: 'running' | 'done' (with audio) | 'failed'. */
+async function check69LabsJob(jobId: string, cancelSignal?: AbortSignal): Promise<TtsPollResult> {
+  if (cancelSignal?.aborted) return { state: 'failed', error: 'Terminated by user' };
+
+  let statusRes: Response;
+  try {
+    statusRes = await fetch(`${BASE}/tts/status/${jobId}`, {
+      headers: apiHeaders(),
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch (err) {
+    console.error(`[voiceService] 69 Labs checkJob ${jobId} fetch error:`, err instanceof Error ? err.message : err);
+    return { state: 'running' }; // transient — retry next cycle
+  }
+
+  if (!statusRes.ok) {
+    if (statusRes.status === 404) {
+      // Job may have completed and expired from status — try a direct download.
+      try {
+        return { state: 'done', audio: await downloadTTS(jobId) };
+      } catch {
+        return { state: 'failed', error: `69 Labs job ${jobId} not found (404)` };
+      }
+    }
+    const text = await statusRes.text();
+    return { state: 'failed', error: `69 Labs status ${statusRes.status}: ${text.slice(0, 200)}` };
+  }
+
+  const status = await statusRes.json();
+  const state = ((status.status ?? status.state ?? '') as string).toLowerCase();
+  const meta = status.outputMetadata as Record<string, unknown> | null;
+  const downloadUrl = (status.download_url ?? status.audio_url ?? status.url
+    ?? status.outputUrl ?? meta?.url ?? meta?.audioUrl) as string | undefined;
+
+  console.log(`[voiceService] 69 Labs checkJob ${jobId}: state "${state}"`);
+
+  if (['completed', 'done', 'ready', 'success'].includes(state)) {
+    try {
+      const audio = downloadUrl ? await downloadFromUrl(downloadUrl) : await downloadTTS(jobId);
+      return { state: 'done', audio };
+    } catch (err) {
+      return { state: 'failed', error: `69 Labs download failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+  if (['failed', 'error', 'cancelled', 'canceled'].includes(state)) {
+    return { state: 'failed', error: `69 Labs job failed: ${status.error ?? status.message ?? state}` };
+  }
+  return { state: 'running' };
 }
 
 /**
