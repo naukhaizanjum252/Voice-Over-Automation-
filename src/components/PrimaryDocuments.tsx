@@ -3,11 +3,28 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { PrimaryDocument } from '@/types';
 
+const DEFAULT_MODEL = 'claude-sonnet-4.6';
+
+// WellFlow model ids. Haiku isn't offered on WellFlow, so it's hidden.
 const AVAILABLE_MODELS = [
-  { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', desc: 'Fastest, lowest cost' },
-  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', desc: 'Balanced speed & quality' },
-  { id: 'claude-opus-4-6', label: 'Claude Opus 4.6', desc: 'Highest quality' },
+  { id: 'claude-sonnet-4.6', label: 'Claude Sonnet 4.6', desc: 'Balanced speed & quality' },
+  { id: 'claude-opus-4.6', label: 'Claude Opus 4.6', desc: 'High quality' },
+  { id: 'claude-opus-5', label: 'Claude Opus 5', desc: 'Highest quality (newest)' },
 ];
+
+// Map any legacy value still stored in settings to a valid WellFlow option so the
+// dropdown shows a real selection instead of going blank.
+const MODEL_ALIASES: Record<string, string> = {
+  'claude-opus-4-6': 'claude-opus-4.6',
+  'claude-sonnet-4-6': 'claude-sonnet-4.6',
+  'claude-haiku-4-5-20251001': DEFAULT_MODEL,
+  'claude-haiku-4-5': DEFAULT_MODEL,
+};
+
+function normalizeModel(id: string): string {
+  if (AVAILABLE_MODELS.some((m) => m.id === id)) return id;
+  return MODEL_ALIASES[id] ?? DEFAULT_MODEL;
+}
 
 export default function PrimaryDocuments() {
   const [docs, setDocs] = useState<PrimaryDocument[]>([]);
@@ -15,7 +32,7 @@ export default function PrimaryDocuments() {
   const [uploading, setUploading] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const [scriptModel, setScriptModel] = useState('claude-haiku-4-5-20251001');
+  const [scriptModel, setScriptModel] = useState(DEFAULT_MODEL);
   const [modelSaving, setModelSaving] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dragCounter = useRef(0);
@@ -38,7 +55,7 @@ export default function PrimaryDocuments() {
   useEffect(() => {
     fetch('/api/settings?key=script_model')
       .then((r) => r.json())
-      .then((d) => { if (d.value) setScriptModel(d.value); })
+      .then((d) => { if (d.value) setScriptModel(normalizeModel(d.value)); })
       .catch(console.error);
   }, []);
 

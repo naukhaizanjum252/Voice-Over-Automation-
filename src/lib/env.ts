@@ -10,7 +10,13 @@ export const env = {
     apiKey: process.env.AI84_API_KEY || "",
   },
   anthropic: {
+    // Kept available for direct Anthropic use; script generation now goes through WellFlow (below).
     apiKey: process.env.ANTHROPIC_API_KEY || "",
+  },
+  wellflow: {
+    // Anthropic-compatible proxy used for script generation.
+    apiKey: process.env.WELLFLOW_API_KEY || "",
+    baseUrl: process.env.WELLFLOW_BASE_URL || "https://api.wellflow.dev",
   },
   tts: {
     // Which TTS provider to try first: "ai84" (default) or "69labs".

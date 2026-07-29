@@ -3,13 +3,15 @@ import type { MessageParam } from "@anthropic-ai/sdk/resources/messages";
 import { env } from "@/lib/env";
 
 function getClient(): Anthropic {
-  const key = env.anthropic.apiKey;
+  const key = env.wellflow.apiKey;
   if (!key) {
     throw new Error(
-      "ANTHROPIC_API_KEY is not set. Add it to your .env to enable script generation.",
+      "WELLFLOW_API_KEY is not set. Add it to your .env to enable script generation.",
     );
   }
-  return new Anthropic({ apiKey: key });
+  // WellFlow is an Anthropic-compatible proxy — same SDK, just a different base URL + key.
+  // The SDK sends `x-api-key` and `anthropic-version: 2023-06-01` automatically.
+  return new Anthropic({ apiKey: key, baseURL: env.wellflow.baseUrl });
 }
 
 const MAX_RETRIES = 2;
@@ -54,7 +56,27 @@ export interface ScriptGenConfig {
  *   3. If outside ±2% tolerance, send a follow-up asking Claude to adjust
  *   4. Repeat up to MAX_CORRECTION_PASSES times
  */
-const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
+const DEFAULT_MODEL = "claude-sonnet-4.6";
+
+/**
+ * WellFlow uses dotted model ids (e.g. `claude-opus-4.6`), unlike Anthropic's dashed ids.
+ * Map any legacy value that might still be stored in `app_settings.script_model`
+ * (old dashed ids, or the removed Haiku option) to a valid WellFlow model, so an
+ * un-migrated setting doesn't get rejected by the proxy. Unknown ids pass through
+ * (a value already in WellFlow's dotted form is used as-is).
+ */
+const MODEL_ALIASES: Record<string, string> = {
+  "claude-opus-4-6": "claude-opus-4.6",
+  "claude-sonnet-4-6": "claude-sonnet-4.6",
+  // Haiku isn't offered on WellFlow — fall back to the default (Sonnet).
+  "claude-haiku-4-5-20251001": DEFAULT_MODEL,
+  "claude-haiku-4-5": DEFAULT_MODEL,
+};
+
+function resolveModel(model?: string): string {
+  if (!model) return DEFAULT_MODEL;
+  return MODEL_ALIASES[model] ?? model;
+}
 
 export async function generateScript(
   config: ScriptGenConfig,
@@ -63,7 +85,7 @@ export async function generateScript(
 ): Promise<string> {
   const systemPrompt = buildSystemPrompt(config);
   const userPrompt = buildUserPrompt(config, cardTitle);
-  const useModel = model || DEFAULT_MODEL;
+  const useModel = resolveModel(model);
   let lastError: Error | null = null;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {

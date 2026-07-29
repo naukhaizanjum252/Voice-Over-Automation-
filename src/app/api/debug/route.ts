@@ -13,22 +13,25 @@ export async function GET(request: Request) {
 
   const results: Record<string, unknown> = {};
 
-  // ── Anthropic API Test (via SDK) ──
-  if (test === 'all' || test === 'anthropic') {
-    const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
-    results['anthropic_key'] = anthropicKey
-      ? `${anthropicKey.slice(0, 12)}...${anthropicKey.slice(-4)} (${anthropicKey.length} chars)`
+  // ── WellFlow (Anthropic-compatible proxy) Test (via SDK) ──
+  if (test === 'all' || test === 'wellflow' || test === 'anthropic') {
+    const wellflowKey = process.env.WELLFLOW_API_KEY || '';
+    results['wellflow_key'] = wellflowKey
+      ? `${wellflowKey.slice(0, 12)}...${wellflowKey.slice(-4)} (${wellflowKey.length} chars)`
       : 'NOT SET';
 
-    if (anthropicKey) {
-      // Test all three models available in the Script Model dropdown
+    if (wellflowKey) {
+      // Test the models available in the Script Model dropdown
       const models = [
-        'claude-haiku-4-5-20251001',
-        'claude-sonnet-4-6',
-        'claude-opus-4-6',
+        'claude-sonnet-4.6',
+        'claude-opus-4.6',
+        'claude-opus-5',
       ];
 
-      const client = new Anthropic({ apiKey: anthropicKey });
+      const client = new Anthropic({
+        apiKey: wellflowKey,
+        baseURL: process.env.WELLFLOW_BASE_URL || 'https://api.wellflow.dev',
+      });
 
       for (const model of models) {
         try {
@@ -37,14 +40,14 @@ export async function GET(request: Request) {
             max_tokens: 10,
             messages: [{ role: 'user', content: 'Say hi' }],
           });
-          results[`anthropic_${model}`] = {
+          results[`wellflow_${model}`] = {
             status: 'OK',
             response: message.content[0],
             usage: message.usage,
           };
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
-          results[`anthropic_${model}`] = { status: 'FAILED', error: errMsg.slice(0, 200) };
+          results[`wellflow_${model}`] = { status: 'FAILED', error: errMsg.slice(0, 200) };
         }
       }
     }
@@ -236,7 +239,7 @@ export async function GET(request: Request) {
 
       return NextResponse.json({
         channel: ch.name,
-        model: model || 'claude-haiku-4-5-20251001 (default)',
+        model: model || 'claude-sonnet-4.6 (default)',
         title,
         primaryDocs: primaryDocTexts.length,
         scriptLength: scriptText.length,

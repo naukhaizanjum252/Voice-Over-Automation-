@@ -79,9 +79,9 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- Seed default model
+-- Seed default model (WellFlow model id)
 INSERT INTO app_settings (key, value)
-VALUES ('script_model', 'claude-haiku-4-5-20251001')
+VALUES ('script_model', 'claude-sonnet-4.6')
 ON CONFLICT (key) DO NOTHING;
 
 -- ── Cron Locks table (for distributed lock) ──
