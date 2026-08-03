@@ -2,6 +2,24 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { MessageParam } from "@anthropic-ai/sdk/resources/messages";
 import { env } from "@/lib/env";
 
+/**
+ * Max output tokens per generation. Raised well above the old 16k cap so long-form
+ * scripts (e.g. a ~200k-character target ≈ ~50k tokens) can be produced in one call.
+ * 64000 tokens ≈ ~240k characters. WellFlow accepts up to the model ceiling of 128000
+ * if you need to go higher.
+ *
+ * NOTE: we deliberately do NOT stream — WellFlow's SSE currently only emits `ping`
+ * keepalives and never delivers content deltas, so `messages.stream()` hangs. We rely
+ * on a long non-streaming request timeout instead (set on the client below). A large
+ * non-streaming request can run for many minutes, so this is only safe on a runtime
+ * with no per-request kill (the VPS worker) — a serverless function will still be
+ * terminated at its maxDuration.
+ */
+const MAX_OUTPUT_TOKENS = 64000;
+
+/** Long client timeout (ms) so a big non-streaming generation isn't aborted mid-flight. */
+const REQUEST_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
 function getClient(): Anthropic {
   const key = env.wellflow.apiKey;
   if (!key) {
@@ -11,7 +29,7 @@ function getClient(): Anthropic {
   }
   // WellFlow is an Anthropic-compatible proxy — same SDK, just a different base URL + key.
   // The SDK sends `x-api-key` and `anthropic-version: 2023-06-01` automatically.
-  return new Anthropic({ apiKey: key, baseURL: env.wellflow.baseUrl });
+  return new Anthropic({ apiKey: key, baseURL: env.wellflow.baseUrl, timeout: REQUEST_TIMEOUT_MS });
 }
 
 const MAX_RETRIES = 2;
@@ -99,7 +117,7 @@ export async function generateScript(
 
       const message = await client.messages.create({
         model: useModel,
-        max_tokens: 16384,
+        max_tokens: MAX_OUTPUT_TOKENS,
         system: systemPrompt,
         messages,
       });
@@ -151,7 +169,7 @@ export async function generateScript(
 
         const correctionMessage = await client.messages.create({
           model: useModel,
-          max_tokens: 16384,
+          max_tokens: MAX_OUTPUT_TOKENS,
           system: systemPrompt,
           messages,
         });
