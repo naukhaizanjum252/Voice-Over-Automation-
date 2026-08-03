@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import type { MessageParam } from "@anthropic-ai/sdk/resources/messages";
+import type { MessageParam, MessageCreateParamsNonStreaming } from "@anthropic-ai/sdk/resources/messages";
 import { env } from "@/lib/env";
 
 /**
@@ -96,6 +96,51 @@ function resolveModel(model?: string): string {
   return MODEL_ALIASES[model] ?? model;
 }
 
+// ── org_queue_full backoff ──
+// WellFlow caps how many requests our org can have pending at once; when it's full it
+// returns a 429 `org_queue_full` ("too many pending requests"). Rather than fail the card,
+// wait for the queue to drain and retry. This self-throttles us to WellFlow's capacity.
+const QUEUE_FULL_MAX_RETRIES = 6;
+const QUEUE_FULL_BASE_DELAY_MS = 15_000; // grows per attempt: 15s, 30s, 45s … capped below
+const QUEUE_FULL_MAX_DELAY_MS = 90_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** True for WellFlow's "too many pending requests" (org_queue_full) 429. */
+function isQueueFull(err: unknown): boolean {
+  if (err instanceof Anthropic.RateLimitError) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /org_queue_full|too many pending requests/i.test(msg);
+}
+
+/**
+ * Wraps messages.create so an `org_queue_full` 429 backs off and retries (waiting for the
+ * queue to drain) instead of failing. Any non-queue error propagates immediately to the
+ * caller's own retry loop.
+ */
+async function createWithQueueRetry(
+  client: Anthropic,
+  params: MessageCreateParamsNonStreaming,
+): Promise<Anthropic.Message> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= QUEUE_FULL_MAX_RETRIES; attempt++) {
+    try {
+      return await client.messages.create(params);
+    } catch (err) {
+      if (!isQueueFull(err)) throw err;
+      lastErr = err;
+      const delay = Math.min(QUEUE_FULL_BASE_DELAY_MS * attempt, QUEUE_FULL_MAX_DELAY_MS);
+      console.warn(
+        `[scriptService] WellFlow queue full (org_queue_full) — waiting ${Math.round(delay / 1000)}s then retrying (${attempt}/${QUEUE_FULL_MAX_RETRIES})`,
+      );
+      await sleep(delay);
+    }
+  }
+  throw lastErr;
+}
+
 export async function generateScript(
   config: ScriptGenConfig,
   cardTitle: string,
@@ -115,7 +160,7 @@ export async function generateScript(
         { role: "user", content: userPrompt },
       ];
 
-      const message = await client.messages.create({
+      const message = await createWithQueueRetry(client, {
         model: useModel,
         max_tokens: MAX_OUTPUT_TOKENS,
         system: systemPrompt,
@@ -167,7 +212,7 @@ export async function generateScript(
         const correctionPrompt = buildCorrectionPrompt(currentLen, target, direction, adjustedDiff);
         messages.push({ role: "user", content: correctionPrompt });
 
-        const correctionMessage = await client.messages.create({
+        const correctionMessage = await createWithQueueRetry(client, {
           model: useModel,
           max_tokens: MAX_OUTPUT_TOKENS,
           system: systemPrompt,
