@@ -1,8 +1,9 @@
 name: Process Voiceovers
 
+# Automatic schedule removed — processing now runs on the VPS worker (worker/index.ts).
+# Kept as manual-only. Do NOT run it while the worker is active: it would trigger
+# Vercel-side processing and double-process the same database.
 on:
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 jobs:
