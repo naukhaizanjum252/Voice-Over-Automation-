@@ -7,16 +7,38 @@ function authParams(): string {
   return `key=${encodeURIComponent(env.trello.apiKey)}&token=${encodeURIComponent(env.trello.token)}`;
 }
 
+const MAX_429_RETRIES = 3;
+
 async function trelloFetch<T>(path: string, options?: RequestInit): Promise<T> {
   const separator = path.includes('?') ? '&' : '?';
   const url = `${BASE}${path}${separator}${authParams()}`;
 
-  try {
-    const res = await fetch(url, {
-      ...options,
-      cache: 'no-store',
-      signal: AbortSignal.timeout(30000), // 30s timeout
-    });
+  for (let attempt = 0; ; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        ...options,
+        cache: 'no-store',
+        signal: AbortSignal.timeout(30000), // 30s timeout
+      });
+    } catch (err) {
+      // Enrich error message for debugging
+      if (err instanceof Error) {
+        const cause = (err as unknown as Record<string, unknown>).cause;
+        const causeMsg = cause instanceof Error ? ` (cause: ${cause.message})` : '';
+        throw new Error(`Trello fetch failed for ${path}: ${err.message}${causeMsg}`);
+      }
+      throw err;
+    }
+
+    // Rate limited — back off (respecting Retry-After) and retry instead of failing.
+    if (res.status === 429 && attempt < MAX_429_RETRIES) {
+      const retryAfter = Number(res.headers.get('retry-after')) || 0;
+      const delayMs = retryAfter > 0 ? retryAfter * 1000 : 1000 * (attempt + 1);
+      console.warn(`[trello] 429 on ${path} — waiting ${delayMs}ms (retry ${attempt + 1}/${MAX_429_RETRIES})`);
+      await new Promise((r) => setTimeout(r, delayMs));
+      continue;
+    }
 
     if (!res.ok) {
       const text = await res.text();
@@ -24,14 +46,6 @@ async function trelloFetch<T>(path: string, options?: RequestInit): Promise<T> {
     }
 
     return res.json() as Promise<T>;
-  } catch (err) {
-    // Enrich error message for debugging
-    if (err instanceof Error) {
-      const cause = (err as unknown as Record<string, unknown>).cause;
-      const causeMsg = cause instanceof Error ? ` (cause: ${cause.message})` : '';
-      throw new Error(`Trello fetch failed for ${path}: ${err.message}${causeMsg}`);
-    }
-    throw err;
   }
 }
 

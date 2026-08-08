@@ -32,9 +32,11 @@ export async function GET() {
     // Collect unique board IDs and fetch board + list names from Trello
     const boardIds = Array.from(new Set((channels ?? []).map((ch: Channel) => ch.trello_board_id)));
 
-    // Fetch all boards once, then lists per board (in parallel)
+    // Fetch board/list NAMES from Trello — best-effort only. Card statuses come from
+    // Supabase, so if Trello is down/rate-limited we still return correct statuses and
+    // just fall back to showing board/list IDs as names (never blank the dashboard).
     const [allBoards, ...listsPerBoard] = await Promise.all([
-      getBoards(),
+      getBoards().catch(() => []),
       ...boardIds.map((bid) => getLists(bid).catch(() => [])),
     ]);
 

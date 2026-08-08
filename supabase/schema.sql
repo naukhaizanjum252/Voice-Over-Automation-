@@ -51,10 +51,12 @@ CREATE TABLE IF NOT EXISTS processed_cards (
   status TEXT NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
   processing_stage TEXT DEFAULT NULL
-    CHECK (processing_stage IS NULL OR processing_stage IN ('script_generating', 'downloading', 'extracting', 'generating', 'queued', 'uploading')),
+    CHECK (processing_stage IS NULL OR processing_stage IN ('script_generating', 'script_uploading', 'downloading', 'extracting', 'generating', 'queued', 'uploading')),
   error_message TEXT,
   script_url TEXT,
   attachment_url TEXT,
+  -- Auto-retry counter for cards that stall before a TTS job starts (recoverStaleJobs).
+  retry_count INTEGER NOT NULL DEFAULT 0,
   -- In-flight async TTS job (resumable across cron invocations).
   -- Shape: { provider, jobId, voiceId, startedAt, triedProviders }
   tts_job JSONB DEFAULT NULL,

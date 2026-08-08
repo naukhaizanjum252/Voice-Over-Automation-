@@ -4,149 +4,71 @@ import { ELEVENLABS_VOICES } from '@/data/elevenlabs-voices';
 import * as ai84Service from './ai84Service';
 
 /**
- * 69 Labs External API
- * Base: https://69labs.vip/api/v1
- * Auth: Authorization: Bearer <vk_ API key> (permanent, no refresh needed)
+ * All TTS runs through AI84 (https://api.ai84.pro). Two engines:
+ *   - ai84_minimax     — MiniMax TTS via a cloned `canonical_voice_id`. Primary.
+ *   - ai84_elevenlabs  — ElevenLabs TTS via the raw ElevenLabs `voice_id`. Fallback.
  *
- * Voices:
- *   GET  /voice-clones          → your cloned voices
- *   GET  /voice-clones/library  → shared/global voice library
+ * Order is controlled by TTS_PRIMARY_PROVIDER: "elevenlabs" → ElevenLabs first;
+ * anything else (default) → MiniMax first, ElevenLabs fallback.
  *
- * TTS (async):
- *   POST /voice-clones/generate → returns job { id }
- *   GET  /tts/status/{id}       → poll until ready
- *   GET  /tts/download/{id}     → download audio file
- *
- * Provider order is controlled by TTS_PRIMARY_PROVIDER ("ai84" default, or "69labs").
- * Whichever isn't primary is used as the automatic fallback.
+ * Note: MiniMax caps input at ~10k characters and needs a matching cloned voice, so
+ * long scripts / unmatched voices fall through to the ElevenLabs engine automatically.
  */
-const BASE = 'https://69labs.vip/api/v1';
-const MAX_RETRIES = 2;
-const RETRY_DELAY_MS = 3000;
-const TTS_POLL_INTERVAL_MS = 5000;
 
-function apiHeaders(): Record<string, string> {
-  return {
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-    Authorization: `Bearer ${env.labs69.apiKey}`,
-  };
-}
-
-// ── TTS with automatic fallback ──
-
-/**
- * Resolves the provider order from the TTS_PRIMARY_PROVIDER env var.
- * "69labs" → 69 Labs first, AI84 fallback. Anything else (default) → AI84 first, 69 Labs fallback.
- */
+/** Resolves the engine order from TTS_PRIMARY_PROVIDER (default: MiniMax → ElevenLabs). */
 function resolveProviderOrder(): TtsProvider[] {
   const raw = (env.tts.primaryProvider || 'ai84').toLowerCase().trim();
-  if (['69labs', 'labs69', '69', 'elevenlabs'].includes(raw)) {
-    return ['69labs', 'ai84'];
+  if (['elevenlabs', '11labs', 'eleven', '69labs', 'labs69'].includes(raw)) {
+    return ['ai84_elevenlabs', 'ai84_minimax'];
   }
-  return ['ai84', '69labs'];
+  return ['ai84_minimax', 'ai84_elevenlabs'];
 }
 
 /**
- * Generates audio with automatic fallback. The primary provider is chosen by
- * the TTS_PRIMARY_PROVIDER env var (default "ai84"); the other is the fallback.
- *
- * Note: 69 Labs uses `config.voiceId` directly, but AI84 must match that ID
- * to its own catalog via the source voice's name + gender — resolved from the
- * static ElevenLabs catalog (no network) before calling AI84.
- */
-export async function generateAudio(
-  text: string,
-  config: VoiceConfig,
-  onStageChange?: (stage: 'queued' | 'generating') => void,
-  cancelSignal?: AbortSignal
-): Promise<Buffer> {
-  const order = resolveProviderOrder();
-  const errors: string[] = [];
-
-  for (let i = 0; i < order.length; i++) {
-    const provider = order[i];
-    const role = i === 0 ? 'primary' : 'fallback';
-
-    // Skip AI84 if it isn't configured (69 Labs needs no extra key beyond labs69).
-    if (provider === 'ai84' && !env.ai84.apiKey) {
-      console.warn(`[voiceService] AI84 (${role}) not configured (no API key), skipping.`);
-      continue;
-    }
-
-    if (role === 'fallback') {
-      console.log(`[voiceService] Falling back to ${provider}...`);
-    }
-
-    try {
-      let audio: Buffer;
-      if (provider === 'ai84') {
-        const { sourceName, sourceGender } = resolveSourceVoice(config.voiceId);
-        audio = await ai84Service.generateAudio(text, config, onStageChange, sourceName, sourceGender, cancelSignal);
-      } else {
-        audio = await generateAudioWith69Labs(text, config, onStageChange, cancelSignal);
-      }
-      if (role === 'fallback') {
-        console.log(`[voiceService] ${provider} fallback succeeded.`);
-      }
-      return audio;
-    } catch (err) {
-      // If cancelled, don't fall back — propagate immediately.
-      if (cancelSignal?.aborted) throw err;
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[voiceService] ${provider} (${role}) failed: ${msg}`);
-      errors.push(`${provider}: ${msg}`);
-    }
-  }
-
-  throw new Error(`TTS failed on all providers. ${errors.join(' | ')}`);
-}
-
-/**
- * Resolves a voice's name + gender from the static ElevenLabs catalog so AI84
- * can match it to an equivalent voice. Synchronous — no network call, so the
- * primary path stays fast and independent of 69 Labs availability.
- *
- * Cloned/library voices not in the static catalog still match via AI84's
- * hardcoded ID map and id-in-name tiers, which key off the voiceId alone.
+ * Resolves a voice's name + gender from the static ElevenLabs catalog so the MiniMax
+ * engine can match it to a cloned `canonical_voice_id`. Synchronous — no network call.
+ * The ElevenLabs engine ignores this (it uses the raw voiceId directly).
  */
 function resolveSourceVoice(voiceId: string): { sourceName?: string; sourceGender?: string } {
   const sourceVoice = ELEVENLABS_VOICES.find((v) => v.voice_id === voiceId);
   if (sourceVoice) {
-    console.log(`[voiceService] Source voice for matching: "${sourceVoice.name}" (${sourceVoice.labels?.gender ?? 'unknown gender'})`);
+    console.log(`[voiceService] Source voice for MiniMax matching: "${sourceVoice.name}" (${sourceVoice.labels?.gender ?? 'unknown gender'})`);
     return { sourceName: sourceVoice.name, sourceGender: sourceVoice.labels?.gender };
   }
-  console.log(`[voiceService] Source voice ${voiceId} not in static catalog — AI84 will match by ID/hardcoded map`);
+  console.log(`[voiceService] Source voice ${voiceId} not in static catalog — MiniMax will match by ID/hardcoded map`);
   return {};
 }
 
 // ── Async (resumable) TTS orchestration ──
-// Start a job and persist its id; a later cron invocation polls it once and finishes
-// when ready. This lets long AI84 queues span multiple runs without blocking/timing out.
+// Start a job and persist its id; a later run polls it once and finishes when ready.
 
 /**
- * Starts a TTS job on the first available provider (per TTS_PRIMARY_PROVIDER), skipping
- * any in `alreadyTried`. Returns a TtsJob to persist. Throws if no provider can start.
+ * Starts a TTS job on the first available AI84 engine (per TTS_PRIMARY_PROVIDER),
+ * skipping any in `alreadyTried`. Returns a TtsJob to persist. Throws if none can start.
  */
 export async function startTtsJob(
   text: string,
   config: VoiceConfig,
   alreadyTried: TtsProvider[] = []
 ): Promise<TtsJob> {
+  if (!env.ai84.apiKey) {
+    throw new Error('AI84_API_KEY is not set — TTS cannot run.');
+  }
+
   const order = resolveProviderOrder().filter((p) => !alreadyTried.includes(p));
   const tried: TtsProvider[] = [...alreadyTried];
   const errors: string[] = [];
 
   for (const provider of order) {
-    if (provider === 'ai84' && !env.ai84.apiKey) continue;
     tried.push(provider);
     try {
-      if (provider === 'ai84') {
+      if (provider === 'ai84_minimax') {
         const { sourceName, sourceGender } = resolveSourceVoice(config.voiceId);
         const { jobId, canonicalVoiceId } = await ai84Service.startJob(text, config, sourceName, sourceGender);
         return { provider, jobId, voiceId: canonicalVoiceId, startedAt: new Date().toISOString(), triedProviders: tried };
       }
-      const { jobId } = await start69LabsJob(text, config);
+      // ai84_elevenlabs — uses the raw ElevenLabs voiceId directly.
+      const { jobId } = await ai84Service.startElevenLabsJob(text, config);
       return { provider, jobId, voiceId: config.voiceId, startedAt: new Date().toISOString(), triedProviders: tried };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -154,451 +76,41 @@ export async function startTtsJob(
       errors.push(`${provider}: ${msg}`);
     }
   }
-  throw new Error(`Failed to start TTS on all providers. ${errors.join(' | ')}`);
+
+  throw new Error(`Failed to start TTS on all AI84 engines. ${errors.join(' | ')}`);
 }
 
-/** Polls a persisted TTS job once, delegating to the provider that owns it. */
+/** Polls a persisted TTS job once, delegating to the engine that owns it. */
 export async function pollTtsJob(job: TtsJob, cancelSignal?: AbortSignal): Promise<TtsPollResult> {
-  if (job.provider === 'ai84') {
-    return ai84Service.checkJob(job.jobId, cancelSignal);
+  if (job.provider === 'ai84_elevenlabs') {
+    return ai84Service.checkElevenLabsJob(job.jobId, cancelSignal);
   }
-  return check69LabsJob(job.jobId, cancelSignal);
+  // ai84_minimax (and any legacy 'ai84' value) → MiniMax poller.
+  return ai84Service.checkJob(job.jobId, cancelSignal);
 }
 
-/** Starts a 69 Labs TTS job and returns its id (no polling). */
-async function start69LabsJob(text: string, config: VoiceConfig): Promise<{ jobId: string }> {
-  const res = await fetch(`${BASE}/tts/generate`, {
-    method: 'POST',
-    headers: apiHeaders(),
-    body: JSON.stringify({
-      text,
-      voiceId: config.voiceId,
-      model_id: 'eleven_multilingual_v2',
-      voice_settings: {
-        stability: config.stability,
-        similarity_boost: 0.75,
-        speed: config.speed,
-        style: config.style ?? 0,
-      },
-    }),
-    signal: AbortSignal.timeout(30000),
-  });
-
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`69 Labs generate ${res.status}: ${errorText}`);
-  }
-
-  const data = await res.json();
-  const jobId = data.id ?? data.jobId ?? data.task_id ?? data.ttsId;
-  if (!jobId) {
-    throw new Error(`69 Labs: no job id in response: ${JSON.stringify(data).slice(0, 300)}`);
-  }
-  console.log(`[voiceService] Started 69 Labs job ${jobId}`);
-  return { jobId: String(jobId) };
-}
-
-/** Polls a 69 Labs job once: 'running' | 'done' (with audio) | 'failed'. */
-async function check69LabsJob(jobId: string, cancelSignal?: AbortSignal): Promise<TtsPollResult> {
-  if (cancelSignal?.aborted) return { state: 'failed', error: 'Terminated by user' };
-
-  let statusRes: Response;
-  try {
-    statusRes = await fetch(`${BASE}/tts/status/${jobId}`, {
-      headers: apiHeaders(),
-      signal: AbortSignal.timeout(10000),
-    });
-  } catch (err) {
-    console.error(`[voiceService] 69 Labs checkJob ${jobId} fetch error:`, err instanceof Error ? err.message : err);
-    return { state: 'running' }; // transient — retry next cycle
-  }
-
-  if (!statusRes.ok) {
-    if (statusRes.status === 404) {
-      // Job may have completed and expired from status — try a direct download.
-      try {
-        return { state: 'done', audio: await downloadTTS(jobId) };
-      } catch {
-        return { state: 'failed', error: `69 Labs job ${jobId} not found (404)` };
-      }
-    }
-    const text = await statusRes.text();
-    return { state: 'failed', error: `69 Labs status ${statusRes.status}: ${text.slice(0, 200)}` };
-  }
-
-  const status = await statusRes.json();
-  const state = ((status.status ?? status.state ?? '') as string).toLowerCase();
-  const meta = status.outputMetadata as Record<string, unknown> | null;
-  const downloadUrl = (status.download_url ?? status.audio_url ?? status.url
-    ?? status.outputUrl ?? meta?.url ?? meta?.audioUrl) as string | undefined;
-
-  console.log(`[voiceService] 69 Labs checkJob ${jobId}: state "${state}"`);
-
-  if (['completed', 'done', 'ready', 'success'].includes(state)) {
-    try {
-      const audio = downloadUrl ? await downloadFromUrl(downloadUrl) : await downloadTTS(jobId);
-      return { state: 'done', audio };
-    } catch (err) {
-      return { state: 'failed', error: `69 Labs download failed: ${err instanceof Error ? err.message : String(err)}` };
-    }
-  }
-  if (['failed', 'error', 'cancelled', 'canceled'].includes(state)) {
-    return { state: 'failed', error: `69 Labs job failed: ${status.error ?? status.message ?? state}` };
-  }
-  return { state: 'running' };
-}
+// ── Voices (for the picker) ──
 
 /**
- * Generates audio using 69 Labs async TTS (primary provider).
- * 1. POST /tts/generate  → start job
- * 2. Poll GET /tts/status/{id}    → wait for completion
- * 3. GET  /tts/download/{id}      → download audio
- */
-async function generateAudioWith69Labs(
-  text: string,
-  config: VoiceConfig,
-  onStageChange?: (stage: 'queued' | 'generating') => void,
-  cancelSignal?: AbortSignal
-): Promise<Buffer> {
-  let lastError: Error | null = null;
-
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      // Step 1: Start TTS job
-      const generateRes = await fetch(`${BASE}/tts/generate`, {
-        method: 'POST',
-        headers: apiHeaders(),
-        body: JSON.stringify({
-          text,
-          voiceId: config.voiceId,
-          model_id: 'eleven_multilingual_v2',
-          voice_settings: {
-            stability: config.stability,
-            similarity_boost: 0.75,
-            speed: config.speed,
-            style: config.style ?? 0,
-          },
-        }),
-        signal: AbortSignal.timeout(30000),
-      });
-
-      if (!generateRes.ok) {
-        const errorText = await generateRes.text();
-        const err = new Error(`69 Labs generate ${generateRes.status}: ${errorText}`);
-        // Don't retry on 400/401/403 — these are permanent failures
-        if (generateRes.status >= 400 && generateRes.status < 500) {
-          throw err;
-        }
-        throw err;
-      }
-
-      const generateData = await generateRes.json();
-      console.log(`[voiceService] Generate response keys: ${Object.keys(generateData).join(', ')}`);
-
-      const jobId =
-        generateData.id ?? generateData.jobId ?? generateData.task_id ?? generateData.ttsId;
-
-      if (!jobId) {
-        // Some endpoints return audio directly
-        if (generateData.audio_url) {
-          return await downloadFromUrl(generateData.audio_url);
-        }
-        // If response has audio data inline
-        if (generateData.audio) {
-          return Buffer.from(generateData.audio, 'base64');
-        }
-        throw new Error(
-          `No job ID in generate response: ${JSON.stringify(generateData).slice(0, 500)}`
-        );
-      }
-
-      console.log(`[voiceService] TTS job started: ${jobId}`);
-
-      // Step 2: Poll → Step 3: Download
-      return await pollAndDownload(jobId, onStageChange, cancelSignal);
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      console.error(
-        `[voiceService] 69 Labs attempt ${attempt}/${MAX_RETRIES} failed:`,
-        lastError.message
-      );
-
-      // Don't retry on client errors (4xx) — they won't succeed on retry
-      if (lastError.message.includes(' 400:') || lastError.message.includes(' 401:') ||
-          lastError.message.includes(' 403:') || lastError.message.includes(' 404:')) {
-        break;
-      }
-
-      if (attempt < MAX_RETRIES) {
-        await sleep(RETRY_DELAY_MS * attempt);
-      }
-    }
-  }
-
-  throw lastError ?? new Error('69 Labs voice generation failed after retries');
-}
-
-/**
- * Polls TTS job status until complete, then downloads the audio.
- */
-async function pollAndDownload(
-  jobId: string,
-  onStageChange?: (stage: 'queued' | 'generating') => void,
-  cancelSignal?: AbortSignal
-): Promise<Buffer> {
-  let lastState = '';
-  let notifiedGenerating = false;
-  let pollCount = 0;
-
-  // Heartbeat: re-emit the current stage every ~60s so the card's updated_at stays
-  // fresh and the stale-job recovery doesn't reset/fail a job that's still running.
-  const HEARTBEAT_EVERY_POLLS = Math.max(1, Math.round(60000 / TTS_POLL_INTERVAL_MS));
-
-  // Poll indefinitely until the TTS provider returns a terminal status.
-  // Vercel's maxDuration or user cancellation will stop us if needed.
-  while (true) {
-    await sleep(TTS_POLL_INTERVAL_MS);
-    pollCount++;
-
-    // Check for cancellation after sleep (catches abort during wait)
-    if (cancelSignal?.aborted) {
-      throw new Error('Terminated by user');
-    }
-
-    if (pollCount % HEARTBEAT_EVERY_POLLS === 0) {
-      onStageChange?.(notifiedGenerating ? 'generating' : 'queued');
-    }
-
-    let statusRes: Response;
-    try {
-      statusRes = await fetch(`${BASE}/tts/status/${jobId}`, {
-        headers: apiHeaders(),
-        signal: AbortSignal.timeout(10000),
-      });
-    } catch (fetchErr) {
-      if (cancelSignal?.aborted) throw new Error('Terminated by user');
-      console.error(`[voiceService] Poll fetch error (attempt ${pollCount}):`, fetchErr);
-      continue; // network glitch, keep polling
-    }
-
-    if (!statusRes.ok) {
-      const text = await statusRes.text();
-      // 404 might mean the job doesn't exist or endpoint is wrong
-      if (statusRes.status === 404) {
-        console.error(`[voiceService] Job ${jobId} not found (404), trying download directly...`);
-        try {
-          return await downloadTTS(jobId);
-        } catch {
-          throw new Error(`TTS job ${jobId} not found and download failed`);
-        }
-      }
-      throw new Error(`TTS status check ${statusRes.status}: ${text}`);
-    }
-
-    const status = await statusRes.json();
-    const state: string =
-      (status.status ?? status.state ?? '') as string;
-    const queuePos = status.queuePosition;
-
-    // Log on first poll or state change
-    if (state !== lastState || pollCount === 1) {
-      const queueInfo = queuePos != null ? ` (queue #${queuePos})` : '';
-      console.log(`[voiceService] Job ${jobId} state: "${state}"${queueInfo} | startedAt: ${status.startedAt ?? 'null'}`);
-      lastState = state;
-    }
-
-    const stateLower = state.toLowerCase();
-
-    if (['completed', 'done', 'ready', 'success'].includes(stateLower)) {
-      // Check for download URL in status response or outputMetadata
-      const meta = status.outputMetadata as Record<string, unknown> | null;
-      const downloadUrl = status.download_url ?? status.audio_url ?? status.url
-        ?? status.outputUrl ?? meta?.url ?? meta?.audioUrl;
-      if (downloadUrl) {
-        return await downloadFromUrl(downloadUrl as string);
-      }
-      return await downloadTTS(jobId);
-    }
-
-    if (['failed', 'error', 'cancelled', 'canceled'].includes(stateLower)) {
-      throw new Error(
-        `TTS job failed: ${status.error ?? status.message ?? status.errorMessage ?? JSON.stringify(status).slice(0, 300)}`
-      );
-    }
-
-    // PENDING / PROCESSING are expected in-progress states — keep polling
-    if (['pending', 'processing', 'queued', 'running'].includes(stateLower)) {
-      // Notify UI when job moves from queued/pending to actively processing
-      if (!notifiedGenerating && ['processing', 'running'].includes(stateLower)) {
-        notifiedGenerating = true;
-        onStageChange?.('generating');
-      }
-      continue;
-    }
-
-    // Unknown state — log it but keep polling
-    if (stateLower) {
-      console.warn(`[voiceService] Job ${jobId} unknown state: "${state}" — continuing to poll`);
-    }
-  }
-}
-
-/** Download finished TTS audio by job ID. */
-async function downloadTTS(jobId: string): Promise<Buffer> {
-  const res = await fetch(`${BASE}/tts/download/${jobId}`, {
-    headers: {
-      Authorization: `Bearer ${env.labs69.apiKey}`,
-      Accept: 'audio/mpeg',
-    },
-    signal: AbortSignal.timeout(60000),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`TTS download ${res.status}: ${text}`);
-  }
-
-  return Buffer.from(await res.arrayBuffer());
-}
-
-/** Download audio from a direct URL. */
-async function downloadFromUrl(url: string): Promise<Buffer> {
-  const fullUrl = url.startsWith('http')
-    ? url
-    : `https://69labs.vip${url}`;
-
-  const res = await fetch(fullUrl, {
-    headers: { Authorization: `Bearer ${env.labs69.apiKey}` },
-    signal: AbortSignal.timeout(60000),
-  });
-
-  if (!res.ok) throw new Error(`Audio download ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
-}
-
-// ── Batch generation ──
-
-/**
- * Generates audio for all chunks sequentially.
- */
-export async function generateAllChunks(
-  chunks: string[],
-  config: VoiceConfig
-): Promise<Buffer[]> {
-  const buffers: Buffer[] = [];
-
-  for (let i = 0; i < chunks.length; i++) {
-    console.log(
-      `[voiceService] Generating chunk ${i + 1}/${chunks.length} (${chunks[i].length} chars)`
-    );
-    const audio = await generateAudio(chunks[i], config);
-    buffers.push(audio);
-
-    if (i < chunks.length - 1) {
-      await sleep(500);
-    }
-  }
-
-  return buffers;
-}
-
-// ── Voices ──
-
-/**
- * Fetches all available voices.
- * Combines: 1599 ElevenLabs voices (static catalog) + user's 69 Labs cloned voices.
+ * Voices available in the picker: the static ElevenLabs catalog (usable directly by the
+ * ElevenLabs engine) + the user's AI84 MiniMax cloned voices.
  */
 export async function getVoices(): Promise<Voice[]> {
-  const allVoices: Voice[] = [];
+  const allVoices: Voice[] = [...ELEVENLABS_VOICES];
 
-  // 1. ElevenLabs voice catalog (1599 voices, static import)
-  allVoices.push(...ELEVENLABS_VOICES);
-
-  // 2. User's own 69 Labs cloned voices
   try {
-    const res = await fetch(`${BASE}/voice-clones`, {
-      headers: apiHeaders(),
-      cache: 'no-store',
-      signal: AbortSignal.timeout(15000),
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      const arr = extractVoiceArray(data);
-
-      for (const v of arr) {
-        allVoices.push(mapVoice(v, 'cloned'));
-      }
+    const cloned = await ai84Service.listClonedVoices();
+    for (const v of cloned) {
+      if (!v.canonical_voice_id) continue;
+      allVoices.push({
+        voice_id: v.canonical_voice_id,
+        name: v.name || 'Cloned voice',
+        category: 'ai84-cloned',
+      });
     }
   } catch (err) {
-    console.error('[voiceService] Cloned voices error:', err);
-  }
-
-  // 3. 69 Labs shared library voices
-  try {
-    const res = await fetch(`${BASE}/voice-clones/library`, {
-      headers: apiHeaders(),
-      cache: 'no-store',
-      signal: AbortSignal.timeout(15000),
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      const arr = extractVoiceArray(data);
-
-      for (const v of arr) {
-        allVoices.push(mapVoice(v, 'shared'));
-      }
-    }
-  } catch (err) {
-    console.error('[voiceService] Library voices error:', err);
+    console.error('[voiceService] AI84 cloned voices error:', err);
   }
 
   return allVoices;
-}
-
-/** Extract voice array from various response shapes. */
-function extractVoiceArray(
-  data: unknown
-): Record<string, unknown>[] {
-  if (Array.isArray(data)) return data;
-  const obj = data as Record<string, unknown>;
-  if (Array.isArray(obj.voiceClones)) return obj.voiceClones;
-  if (Array.isArray(obj.voices)) return obj.voices;
-  if (Array.isArray(obj.items)) return obj.items;
-  if (Array.isArray(obj.data)) return obj.data;
-  return [];
-}
-
-/** Map a raw voice object to our Voice type. */
-function mapVoice(
-  v: Record<string, unknown>,
-  fallbackCategory: string
-): Voice {
-  // Build labels from flat fields if not already present
-  const existingLabels = v.labels as Record<string, string> | undefined;
-  const labels: Record<string, string> = existingLabels
-    ? { ...existingLabels }
-    : {};
-
-  // 69 Labs returns gender/language at top level
-  if (v.gender && !labels.gender) labels.gender = String(v.gender);
-  if (v.language && !labels.accent) labels.accent = String(v.language);
-  if (v.isGlobal !== undefined) {
-    labels.use_case = v.isGlobal ? 'global' : 'custom';
-  }
-
-  return {
-    voice_id: (v.voice_id ?? v.voiceId ?? v.id ?? '') as string,
-    name: (v.name ?? 'Unknown') as string,
-    category: (v.category ?? fallbackCategory) as string,
-    labels: Object.keys(labels).length > 0 ? labels : undefined,
-    preview_url: (v.preview_url ?? v.previewUrl ?? v.sample_url) as
-      | string
-      | undefined,
-  };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

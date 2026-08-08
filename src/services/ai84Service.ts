@@ -2,7 +2,7 @@ import { env } from '@/lib/env';
 import type { VoiceConfig, TtsPollResult } from '@/types';
 
 /**
- * AI84.pro TTS — Fallback provider when 69 Labs fails.
+ * AI84.pro TTS — MiniMax engine (primary). The ElevenLabs engine (bottom of file) is the fallback.
  *
  * Async flow:
  *   POST /v1/minimax/text-to-speech/async → { job_id, status: "queued" }
@@ -142,7 +142,7 @@ function extractVoiceArray(data: unknown): AI84Voice[] {
  * gender match or "first available" voice: that silently substitutes an arbitrary
  * voice (and makes different source voiceIds collapse to the same wrong one, so
  * changing a channel's voice appears to do nothing). A null result lets the caller
- * fall back to 69 Labs, which uses the voiceId natively and correctly.
+ * fall back to the ElevenLabs engine, which uses the voiceId natively and correctly.
  */
 async function findMatchingVoice(
   sourceVoiceId: string,
@@ -152,7 +152,7 @@ async function findMatchingVoice(
   const voices = await fetchAI84Voices();
 
   if (voices.length === 0) {
-    console.warn('[ai84] No voices available — no confident match, will fall back to 69 Labs');
+    console.warn('[ai84] No voices available — no confident MiniMax match, will fall back to the ElevenLabs engine');
     return null;
   }
 
@@ -231,8 +231,8 @@ async function findMatchingVoice(
 
   // No confident (name/ID-based) match. Do NOT substitute a gender/first-available
   // voice — that would silently use the wrong voice. Return null so the caller falls
-  // back to 69 Labs, which can use this voiceId directly.
-  console.warn(`[ai84] No confident voice match for "${sourceVoiceName ?? sourceVoiceId}" (${sourceVoiceId}) — falling back to 69 Labs`);
+  // back to the ElevenLabs engine, which can use this voiceId directly.
+  console.warn(`[ai84] No confident MiniMax match for "${sourceVoiceName ?? sourceVoiceId}" (${sourceVoiceId}) — falling back to the ElevenLabs engine`);
   return null;
 }
 
@@ -563,4 +563,109 @@ async function downloadFromUrl(url: string): Promise<Buffer> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ElevenLabs engine — AI84 /v2/text-to-speech/async
+// Uses the raw ElevenLabs voice_id directly (no canonical matching). This is the
+// fallback for the MiniMax engine (and handles long scripts, which MiniMax caps at ~10k).
+// ══════════════════════════════════════════════════════════════════════════════
+
+const ELEVEN_MODEL_ID = 'eleven_multilingual_v2';
+
+/** Starts an AI84-ElevenLabs TTS job and returns its id (no polling). */
+export async function startElevenLabsJob(
+  text: string,
+  config: VoiceConfig,
+): Promise<{ jobId: string }> {
+  const res = await fetch(`${BASE}/v2/text-to-speech/async`, {
+    method: 'POST',
+    headers: apiHeaders(),
+    body: JSON.stringify({
+      text,
+      voice_id: config.voiceId,
+      model_id: ELEVEN_MODEL_ID,
+      output_format: 'mp3_44100_128',
+      voice_settings: {
+        stability: config.stability ?? 0.5,
+        similarity_boost: 0.75,
+        style: config.style ?? 0,
+        speed: config.speed ?? 1.0,
+        use_speaker_boost: true,
+      },
+    }),
+    signal: AbortSignal.timeout(30000),
+  });
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`AI84 ElevenLabs generate ${res.status}: ${errorText.slice(0, 300)}`);
+  }
+
+  const data = await res.json();
+  const jobId = data.job_id ?? data.task_id;
+  if (!jobId) {
+    throw new Error(`AI84 ElevenLabs: no job_id in response: ${JSON.stringify(data).slice(0, 300)}`);
+  }
+  console.log(`[ai84] Started ElevenLabs job ${jobId} (voice ${config.voiceId})`);
+  return { jobId: String(jobId) };
+}
+
+/**
+ * Polls an AI84-ElevenLabs job once. Status is a closed set: queued | processing | done |
+ * failed. `done` → download job.audioUrl (camelCase); `failed` → error; anything else →
+ * keep running. HTTP 200 ≠ success — always branch on job.status. A 5xx or network error
+ * is treated as transient (running) so we retry on the next cycle.
+ */
+export async function checkElevenLabsJob(jobId: string, cancelSignal?: AbortSignal): Promise<TtsPollResult> {
+  if (cancelSignal?.aborted) return { state: 'failed', error: 'Terminated by user' };
+
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/v2/text-to-speech/async/${jobId}`, {
+      headers: apiHeaders(),
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (err) {
+    console.error(`[ai84] ElevenLabs checkJob ${jobId} fetch error:`, err instanceof Error ? err.message : err);
+    return { state: 'running' }; // transient — retry next cycle
+  }
+
+  if (!res.ok) {
+    // Per the docs, a 5xx during polling means the job is still running — keep polling.
+    if (res.status >= 500) return { state: 'running' };
+    const text = await res.text();
+    return { state: 'failed', error: `AI84 ElevenLabs status ${res.status}: ${text.slice(0, 200)}` };
+  }
+
+  const data = await res.json();
+  const job = (data.job ?? data) as Record<string, unknown>;
+  const status = String(job.status ?? '').toLowerCase();
+
+  console.log(`[ai84] ElevenLabs checkJob ${jobId}: status "${status}"`);
+
+  if (status === 'failed') {
+    const msg = (job.errorMessage ?? job.error_message ?? 'job failed') as string;
+    return { state: 'failed', error: `AI84 ElevenLabs: ${msg}` };
+  }
+
+  if (status === 'done') {
+    const audioUrl = (job.audioUrl ?? job.audio_url) as string | undefined;
+    if (!audioUrl) {
+      return { state: 'failed', error: `AI84 ElevenLabs job ${jobId} reports done but no audioUrl` };
+    }
+    try {
+      return { state: 'done', audio: await downloadFromUrl(audioUrl) };
+    } catch (err) {
+      return { state: 'failed', error: `AI84 ElevenLabs download failed: ${err instanceof Error ? err.message : String(err)}` };
+    }
+  }
+
+  // queued / processing / waiting_retry / unknown — not terminal, keep polling.
+  return { state: 'running' };
+}
+
+/** MiniMax cloned voices (for the voice picker). */
+export async function listClonedVoices(): Promise<AI84Voice[]> {
+  return fetchAI84Voices();
 }

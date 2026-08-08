@@ -2,12 +2,11 @@
 // TRELLO_TOKEN=
 
 
-// # TTS providers
-// LABS69_API_KEY=        // 69 Labs (69labs.vip)
+// # TTS — everything runs through AI84 (api.ai84.pro)
 // AI84_API_KEY=          // AI84.pro
 
-// # Which TTS provider to try first: "ai84" (default) or "69labs".
-// # The other is used as automatic fallback.
+// # Which AI84 engine to try first: "" / "ai84" / "minimax" (default) → MiniMax first,
+// # ElevenLabs fallback. "elevenlabs" → ElevenLabs first, MiniMax fallback.
 // TTS_PRIMARY_PROVIDER=ai84
 
 // # WellFlow (Anthropic-compatible proxy) — script generation

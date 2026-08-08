@@ -53,37 +53,6 @@ export async function GET(request: Request) {
     }
   }
 
-  // ── 69 Labs TTS Test ──
-  if (test === 'all' || test === 'tts') {
-    const apiKey = process.env.LABS69_API_KEY!;
-    const BASE = 'https://69labs.vip/api/v1';
-    const headers = {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      Authorization: `Bearer ${apiKey}`,
-    };
-
-    try {
-      const genRes = await fetch(`${BASE}/tts/generate`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          text: 'Hello, this is a test.',
-          voiceId: 'EXAVITQu4vr4xnSDxMaL',
-          model_id: 'eleven_multilingual_v2',
-          voice_settings: { stability: 0.5, similarity_boost: 0.75, speed: 1.0 },
-        }),
-      });
-
-      const genText = await genRes.text();
-      let genData: Record<string, unknown> = {};
-      try { genData = JSON.parse(genText); } catch { /* not JSON */ }
-
-      results['tts_generate'] = { status: genRes.status, body: genData };
-    } catch (err) {
-      results['tts_generate'] = { error: err instanceof Error ? err.message : String(err) };
-    }
-  }
 
   // ── AI84 Tests ──
   const ai84Key = process.env.AI84_API_KEY || '';

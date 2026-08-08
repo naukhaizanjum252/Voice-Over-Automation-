@@ -69,13 +69,16 @@ export interface ProcessedCard {
   updated_at: string;
 }
 
-export type TtsProvider = 'ai84' | '69labs';
+// Both engines run through AI84 (api.ai84.pro):
+//   ai84_minimax    — MiniMax TTS via a cloned `canonical_voice_id`
+//   ai84_elevenlabs — ElevenLabs TTS via the raw ElevenLabs `voice_id`
+export type TtsProvider = 'ai84_minimax' | 'ai84_elevenlabs';
 
 /** An in-flight async TTS job persisted on a card so it survives across cron runs. */
 export interface TtsJob {
   provider: TtsProvider;
   jobId: string;
-  /** Resolved provider voice id actually used (AI84 canonical id or 69 Labs voiceId). */
+  /** Resolved voice id actually used (MiniMax canonical id, or ElevenLabs voiceId). */
   voiceId: string;
   startedAt: string;
   /** Providers already attempted, so cross-invocation fallback doesn't retry the same one. */
@@ -161,7 +164,7 @@ export interface ProcessingResult {
   error?: string;
 }
 
-// ── Voice Types (69 Labs) ──
+// ── Voice Types ──
 
 export interface Voice {
   voice_id: string;

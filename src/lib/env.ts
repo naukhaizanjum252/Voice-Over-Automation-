@@ -3,9 +3,6 @@ export const env = {
     apiKey: process.env.TRELLO_API_KEY!,
     token: process.env.TRELLO_TOKEN!,
   },
-  labs69: {
-    apiKey: process.env.LABS69_API_KEY!,
-  },
   ai84: {
     apiKey: process.env.AI84_API_KEY || "",
   },
@@ -19,8 +16,8 @@ export const env = {
     baseUrl: process.env.WELLFLOW_BASE_URL || "https://api.wellflow.dev",
   },
   tts: {
-    // Which TTS provider to try first: "ai84" (default) or "69labs".
-    // The other provider is used as automatic fallback.
+    // Which AI84 engine to try first: "ai84"/"minimax" (default) → MiniMax first;
+    // "elevenlabs" → ElevenLabs first. The other engine is the automatic fallback.
     primaryProvider: process.env.TTS_PRIMARY_PROVIDER || "ai84",
   },
   supabase: {
